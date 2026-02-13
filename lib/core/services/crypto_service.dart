@@ -427,21 +427,45 @@ class CryptoService {
   // If we just await the result, the gauge will sit at 0 then jump to 100.
   // We can emit fake progress while waiting, then emit final real result.
 
+  // --- Benchmark ---
+  // Returns stream of progress.
+  // We emit:
+  // - Speed = -1.0 means "Generating file..."
+  // - Speed >= 0 means result.
   static Stream<BenchmarkProgress> runBenchmark({
     required int dataSizeMB,
     required bool multiThread,
     int iterations = 1,
   }) async* {
-    // 1. Generate temp file
-    final tempDir = Directory.systemTemp;
-    final filePath = '${tempDir.path}/bench_${dataSizeMB}MB.dat';
+    final outDir = await getOutputDirectory();
+    final fileName = 'benchmark_test_${dataSizeMB}MB.dat';
+    final filePath = '${outDir.path}/$fileName';
     final encPath = '$filePath.enc';
     final file = File(filePath);
 
-    // Optimized file generation
-    if (!await file.exists()) {
+    // 1. Check/Generate Test File
+    bool fileExists = await file.exists();
+    if (fileExists) {
+      // Check size
+      final len = await file.length();
+      if (len != dataSizeMB * 1024 * 1024) {
+        fileExists = false;
+        await file.delete();
+      }
+    }
+
+    if (!fileExists) {
+      // Notify UI: Generating...
+      yield BenchmarkProgress(
+        -1.0, // Signal for "Generating"
+        0.0,
+        0,
+        iteration: 0,
+        totalIterations: iterations,
+      );
+
       final chunkSize = 4 * 1024 * 1024; // 4MB chunks
-      final chunk = List<int>.filled(chunkSize, 65);
+      final chunk = List<int>.filled(chunkSize, 65); // 'A'
       final sink = file.openWrite();
       int written = 0;
       final totalBytes = dataSizeMB * 1024 * 1024;
@@ -451,70 +475,89 @@ class CryptoService {
         if (toWrite > chunkSize) toWrite = chunkSize;
         sink.add(chunk.sublist(0, toWrite));
         written += toWrite;
-        // Yield generation progress
-        yield BenchmarkProgress(
-          0,
-          (written / totalBytes) * 0.1,
-          0,
-          iteration: 0,
-          totalIterations: iterations,
-        );
       }
       await sink.close();
     }
 
     // 2. Run Encryption Loop
     for (int i = 1; i <= iterations; i++) {
+      // Yield "Running" state for this iteration (speed 0, progress 0)
       yield BenchmarkProgress(
         0,
-        0.1,
+        0.0,
         0,
         iteration: i,
         totalIterations: iterations,
-      ); // Start signal
+      );
 
       final stopwatch = Stopwatch()..start();
-      final future = compute(_benchmarkIsolate, {
-        'threads': multiThread ? 4 : 1,
-        'key': _defaultKey,
-        'input': filePath,
-        'output': encPath,
-        'useOMP': multiThread && Platform.isAndroid,
-      });
 
-      final resultStr = await future;
+      // Use _encryptFileIsolate to match exact logic of encryptFile if single thread
+      // Or use _encryptFileMT if multi-thread.
+      // NOTE: encryptFile uses _encryptFileIsolate (single thread).
+      // The user wants to match "File Encryption" module rate.
+      // If the user selects "Multi-thread" we use MT.
+
+      final String resultStr;
+      if (multiThread) {
+        // Native MT
+        resultStr = await compute(_benchmarkIsolate, {
+          'useOMP': true,
+          'threads':
+              4, // Default to 4 or auto? User didn't specify thread count control.
+          'key': _defaultKey,
+          'input': filePath,
+          'output': encPath,
+        });
+      } else {
+        // Exact same path as encryptFile
+        resultStr = await compute(_encryptFileIsolate, {
+          'key': _defaultKey,
+          'input': filePath,
+          'output': encPath,
+        });
+      }
+
       stopwatch.stop();
 
       if (resultStr.startsWith("SUCCESS")) {
         final parts = resultStr.split('|');
-        final timeMs = int.parse(parts[1]);
-        final speedGbps = double.parse(parts[2]);
+        // parts[1] is native ms, parts[2] is native speed
+        final nativeTimeMs =
+            int.tryParse(parts[1]) ?? stopwatch.elapsedMilliseconds;
+        final nativeSpeed = double.tryParse(parts[2]) ?? 0.0;
+
+        // Recalculate speed using Dart time if needed, but Native time is more accurate for "core" work.
+        // User complained about "Test module rate is few M, Encrypt module is 1.5G".
+        // Likely because Test module included generation time? OR used temp dir (emulated storage overhead?).
+        // Using native speed return is safest if logic is correct.
 
         yield BenchmarkProgress(
-          speedGbps,
+          nativeSpeed,
           1.0,
-          timeMs,
+          nativeTimeMs,
           iteration: i,
           totalIterations: iterations,
         );
       } else {
+        // Error
         yield BenchmarkProgress(
-          0,
-          0,
+          0.0,
+          0.0,
           0,
           iteration: i,
           totalIterations: iterations,
-        ); // Error signal?
-        // Or throw?
-        // throw Exception("Benchmark failed: $resultStr");
+        );
       }
 
       // Cleanup enc file for next run
-      if (await File(encPath).exists()) await File(encPath).delete();
+      final fEnc = File(encPath);
+      if (await fEnc.exists()) await fEnc.delete();
     }
 
-    // Cleanup input file
-    if (await file.exists()) await file.delete();
+    // Convert logic: keep the source file for next time?
+    // User said: "Check if already exists, if not generate". implies KEEP IT.
+    // So we do NOT delete 'file' (input).
   }
 
   static String _benchmarkIsolate(Map<String, dynamic> args) {
