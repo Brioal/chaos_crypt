@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../../core/services/crypto_service.dart';
+import '../../core/utils/format_utils.dart';
 import 'widgets/benchmark_chart_widget.dart';
 
 class BenchmarkScreen extends StatefulWidget {
@@ -15,15 +17,9 @@ class _BenchmarkResultItem {
   final bool isMultiThread;
   double? speedGbps;
   int? timeMs;
-  bool isRunning;
+  bool isRunning = true;
 
-  _BenchmarkResultItem({
-    required this.iteration,
-    required this.isMultiThread,
-    this.speedGbps,
-    this.timeMs,
-    this.isRunning = true,
-  });
+  _BenchmarkResultItem({required this.iteration, required this.isMultiThread});
 }
 
 class _BenchmarkScreenState extends State<BenchmarkScreen> {
@@ -31,6 +27,8 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
   int _selectedIterations = 5;
   final _sizes = [10, 100, 500, 1024];
   final _iterationOptions = [1, 3, 5, 10];
+  int _selectedThreadCount = 4;
+  final _threadOptions = [1, 2, 4, 6, 8, 12, 16];
 
   bool _isTesting = false;
   String _statusMessage = "";
@@ -46,6 +44,18 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
   int? _finalMultiTime;
 
   StreamSubscription<BenchmarkProgress>? _subscription;
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-detect cores
+    final cores = Platform.numberOfProcessors;
+    _selectedThreadCount = cores;
+    if (!_threadOptions.contains(cores)) {
+      _threadOptions.add(cores);
+      _threadOptions.sort();
+    }
+  }
 
   @override
   void dispose() {
@@ -100,6 +110,7 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
           dataSizeMB: _selectedSizeMB,
           multiThread: multiThread,
           iterations: _selectedIterations,
+          threadCount: _selectedThreadCount,
         ).listen(
           (p) {
             if (!mounted) return;
@@ -317,7 +328,7 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
     double? maxSpeedRef,
   ) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primary = Theme.of(context).colorScheme.primary;
+    // final primary = Theme.of(context).colorScheme.primary; // Unused
 
     // Calculate primitive fill width if we had a max reference,
     // but since it's streaming, just show full width progress or text.
@@ -379,15 +390,16 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
           ),
           const SizedBox(width: 12),
           SizedBox(
-            width: 80,
+            width: 100, // Increased width for adaptive strings
             child: Text(
               item.isRunning
                   ? "..."
-                  : "${item.speedGbps?.toStringAsFixed(2)} Gb/s",
+                  : FormatUtils.formatSpeedGbps(item.speedGbps ?? 0),
               textAlign: TextAlign.right,
               style: const TextStyle(
                 fontWeight: FontWeight.bold,
                 fontFamily: 'monospace',
+                fontSize: 12, // slightly smaller font to fit
               ),
             ),
           ),
@@ -423,7 +435,7 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                "${avgSpeed.toStringAsFixed(3)} Gb/s",
+                FormatUtils.formatSpeedGbps(avgSpeed),
                 style: TextStyle(
                   fontSize: 16,
                   color: isMulti ? Colors.purple : Colors.blue,
@@ -431,7 +443,7 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
                 ),
               ),
               Text(
-                "平均耗时: ${avgTime ?? 0} ms",
+                "平均耗时: ${FormatUtils.formatTime(avgTime ?? 0)}",
                 style: TextStyle(
                   fontSize: 10,
                   color: Theme.of(context).textTheme.bodySmall?.color,
@@ -534,6 +546,33 @@ class _BenchmarkScreenState extends State<BenchmarkScreen> {
                       : (v) {
                           if (v != null)
                             setState(() => _selectedIterations = v);
+                        },
+                ),
+              ],
+            ),
+            const Divider(height: 24),
+            // Thread Count
+            Row(
+              children: [
+                Icon(Icons.memory, size: 18, color: primary),
+                const SizedBox(width: 8),
+                Text('线程数 (依据核心数)', style: theme.textTheme.titleMedium),
+                const Spacer(),
+                DropdownButton<int>(
+                  value: _selectedThreadCount,
+                  underline: const SizedBox(),
+                  items: _threadOptions.map((e) {
+                    bool isCore = e == Platform.numberOfProcessors;
+                    return DropdownMenuItem(
+                      value: e,
+                      child: Text('$e 线程${isCore ? "(推荐)" : ""}'),
+                    );
+                  }).toList(),
+                  onChanged: _isTesting
+                      ? null
+                      : (v) {
+                          if (v != null)
+                            setState(() => _selectedThreadCount = v);
                         },
                 ),
               ],

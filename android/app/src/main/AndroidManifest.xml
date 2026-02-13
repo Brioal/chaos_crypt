@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="chaos_crypt"
+        android:label="兰州大学混沌加密演示软件"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

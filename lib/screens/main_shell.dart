@@ -36,7 +36,7 @@ class _MainShellState extends State<MainShell> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ChaosCrypt'),
+        title: const Text('兰州大学混沌加密演示软件'),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),

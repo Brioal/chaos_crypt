@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 
 import 'package:share_plus/share_plus.dart';
-import 'package:path/path.dart' as p;
 import '../../core/services/crypto_service.dart';
 import '../../core/theme/app_colors.dart';
+import '../../core/utils/format_utils.dart';
 
 class FileEncryptScreen extends StatefulWidget {
   const FileEncryptScreen({super.key});
@@ -67,10 +67,8 @@ class _FileEncryptScreenState extends State<FileEncryptScreen>
       if (_isEncryptMode) {
         // Enforce output to ChaosCrypt folder
         final dir = await CryptoService.getOutputDirectory();
-        final baseName = p.basenameWithoutExtension(
-          _selectedFileName ?? 'file',
-        );
-        final outPath = '${dir.path}/$baseName.lzu';
+        final fileName = _selectedFileName ?? 'file';
+        final outPath = '${dir.path}/$fileName.lzu';
         result = await CryptoService.encryptFile(inputFile.path, outPath);
       } else {
         // Decrypt handles path generation internally (to ChaosCrypt folder)
@@ -78,14 +76,13 @@ class _FileEncryptScreenState extends State<FileEncryptScreen>
       }
 
       final fileSize = await File(result.path).length();
-      final sizeMB = fileSize / (1024 * 1024);
 
       setState(() {
         _resultPath = result.path;
         _resultMessage =
-            'Time: ${result.timeMs} ms\n'
-            'Speed: ${result.speedGbps.toStringAsFixed(3)} Gb/s\n'
-            'Size: ${sizeMB.toStringAsFixed(2)} MB\n'
+            'Time: ${FormatUtils.formatTime(result.timeMs)}\n'
+            'Speed: ${FormatUtils.formatSpeedGbps(result.speedGbps)}\n'
+            'Size: ${FormatUtils.formatSize(fileSize)}\n'
             'Path: ${result.path}';
       });
     } catch (e) {

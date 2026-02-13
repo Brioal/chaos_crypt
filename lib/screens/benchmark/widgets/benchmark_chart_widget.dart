@@ -1,6 +1,7 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/format_utils.dart';
 
 class BenchmarkChartWidget extends StatelessWidget {
   final double singleThreadSpeed;
@@ -24,6 +25,7 @@ class BenchmarkChartWidget extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
     final primary = theme.colorScheme.primary;
     final secondary = theme.colorScheme.secondary;
+
     final speedup = multiThreadSpeed / singleThreadSpeed;
 
     return Card(
@@ -83,7 +85,7 @@ class BenchmarkChartWidget extends StatelessWidget {
                     touchTooltipData: BarTouchTooltipData(
                       getTooltipItem: (group, groupIndex, rod, rodIndex) {
                         return BarTooltipItem(
-                          '${rod.toY.toStringAsFixed(1)} MB/s',
+                          '${rod.toY.toStringAsFixed(3)} Gb/s',
                           TextStyle(
                             color: isDark ? Colors.white : Colors.black87,
                             fontWeight: FontWeight.w600,
@@ -286,7 +288,7 @@ class _ResultColumn extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         Text(
-          '${speed.toStringAsFixed(1)} MB/s',
+          FormatUtils.formatSpeedGbps(speed),
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w700,
@@ -294,7 +296,7 @@ class _ResultColumn extends StatelessWidget {
           ),
         ),
         Text(
-          '${(timeMs / 1000).toStringAsFixed(2)}s',
+          FormatUtils.formatTime(timeMs),
           style: TextStyle(
             fontSize: 12,
             color: isDark ? Colors.white24 : Colors.black38,

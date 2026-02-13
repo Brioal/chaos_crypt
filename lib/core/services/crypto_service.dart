@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart'; // For compute
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 
 // FFI signatures
 typedef EncryptStringC =
@@ -104,6 +105,16 @@ class CryptoResult {
 class CryptoService {
   static const String _defaultKey = "ChaosCryptDefaultKey123";
 
+  static Future<String> _getStoredKey() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('encryption_key') ?? _defaultKey;
+  }
+
+  static Future<int> _getThreadCount() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt('thread_count') ?? 4;
+  }
+
   // Helper to call native file function
   static String _callFileFunc(
     Pointer<Utf8> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>) func,
@@ -180,10 +191,12 @@ class CryptoService {
     await inFile.writeAsBytes(imageBytes);
     final outFile = File('${tempDir.path}/temp_img.enc');
 
+    final key = await _getStoredKey();
+
     // 2. Encrypt file
     final result =
         await compute(_encryptFileIsolate, {
-          'key': _defaultKey,
+          'key': key,
           'input': inFile.path,
           'output': outFile.path,
         }).timeout(
@@ -294,11 +307,27 @@ class CryptoService {
     print('[CryptoService] Start encryptFile: $inputPath -> $outputPath');
     final stopwatch = Stopwatch()..start();
 
-    final result = await compute(_encryptFileIsolate, {
-      'key': _defaultKey,
-      'input': inputPath,
-      'output': outputPath,
-    });
+    final key = await _getStoredKey();
+    final threads = await _getThreadCount();
+
+    final String result;
+    if (threads > 1) {
+      // Use MT if threads > 1
+      result = await compute(_benchmarkIsolate, {
+        'useOMP': true,
+        'threads': threads,
+        'key': key,
+        'input': inputPath,
+        'output': outputPath,
+      });
+    } else {
+      // Use Single Thread
+      result = await compute(_encryptFileIsolate, {
+        'key': key,
+        'input': inputPath,
+        'output': outputPath,
+      });
+    }
 
     stopwatch.stop();
     print(
@@ -314,11 +343,6 @@ class CryptoService {
         timeMs = int.tryParse(parts[1]) ?? 0;
         speed = double.tryParse(parts[2]) ?? 0.0;
       }
-      // speed (native) is in Gbit/s usually?
-      // native_lib line 105: speed = ... * 1000? No.
-      // It calculates Gbit/s? "fileLength * 8 / ... / time * 1000".
-      // Yes.
-      // Let's keep it as is. UI can convert.
 
       return CryptoResult(
         path: outputPath,
@@ -350,8 +374,10 @@ class CryptoService {
     print('[CryptoService] Start decryptFile: $inputPath -> $finalPath');
     final stopwatch = Stopwatch()..start();
 
+    final key = await _getStoredKey();
+
     final result = await compute(_decryptFileIsolate, {
-      'key': _defaultKey,
+      'key': key,
       'input': inputPath,
       'output': finalPath,
     });
@@ -436,6 +462,7 @@ class CryptoService {
     required int dataSizeMB,
     required bool multiThread,
     int iterations = 1,
+    int threadCount = 4,
   }) async* {
     final outDir = await getOutputDirectory();
     final fileName = 'benchmark_test_${dataSizeMB}MB.dat';
@@ -503,8 +530,7 @@ class CryptoService {
         // Native MT
         resultStr = await compute(_benchmarkIsolate, {
           'useOMP': true,
-          'threads':
-              4, // Default to 4 or auto? User didn't specify thread count control.
+          'threads': threadCount,
           'key': _defaultKey,
           'input': filePath,
           'output': encPath,
