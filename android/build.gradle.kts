@@ -11,10 +11,17 @@ val newBuildDir: Directory =
         .get()
 rootProject.layout.buildDirectory.value(newBuildDir)
 
+apply(from = "fixes.gradle")
+
 subprojects {
-    val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
-    project.layout.buildDirectory.value(newSubprojectBuildDir)
+    // Only configure build directory for projects inside the root project directory
+    // This avoids "different roots" exceptions on Windows for plugins located on other drives (e.g. Pub cache)
+    if (project.projectDir.absolutePath.startsWith(rootProject.projectDir.absolutePath)) {
+        val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
+        project.layout.buildDirectory.value(newSubprojectBuildDir)
+    }
 }
+
 subprojects {
     project.evaluationDependsOn(":app")
 }

@@ -1,0 +1,39 @@
+subprojects {
+    afterEvaluate { project ->
+        if (project.plugins.hasPlugin("com.android.library") || project.plugins.hasPlugin("com.android.application")) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility = JavaVersion.VERSION_21
+                    targetCompatibility = JavaVersion.VERSION_21
+                }
+            }
+        }
+        // Use tasks.all to capture tasks created later (e.g. by Android plugin in its afterEvaluate)
+        project.tasks.all { task ->
+            if (task.name.contains("Kotlin") || task.class.name.contains("Kotlin")) {
+                try {
+                    // Try setting kotlinc options via reflection/dynamic
+                    if (task.hasProperty("kotlinOptions")) {
+                        task.kotlinOptions.jvmTarget = "21"
+                    }
+                    // Also try explicit compilerOptions for newer Kotlin
+                    if (task.hasProperty("compilerOptions")) {
+                         def compilerOptions = task.compilerOptions
+                         if (compilerOptions.hasProperty("jvmTarget")) {
+                             try {
+                                 // Try to load JvmTarget class via task's classloader
+                                 def jvmTargetEnumClass = task.class.classLoader.loadClass("org.jetbrains.kotlin.gradle.dsl.JvmTarget")
+                                 def jvm21 = jvmTargetEnumClass.valueOf("JVM_21")
+                                 compilerOptions.jvmTarget.set(jvm21)
+                             } catch (Exception ex) {
+                                 // ignore
+                             }
+                         }
+                    }
+                } catch (Exception e) {
+                    // ignore
+                }
+            }
+        }
+    }
+}
