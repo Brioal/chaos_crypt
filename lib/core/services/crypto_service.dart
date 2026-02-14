@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart'; // For compute
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // FFI signatures
@@ -142,13 +143,28 @@ class CryptoService {
   static Future<Directory> getOutputDirectory() async {
     Directory? dir;
     if (Platform.isAndroid) {
-      dir = Directory('/storage/emulated/0/Download/ChaosCrypt');
+      // Request storage permissions
+      var status = await Permission.manageExternalStorage.status;
+      if (!status.isGranted) {
+        await Permission.manageExternalStorage.request();
+      }
+
+      if (await Permission.storage.status.isDenied) {
+        await Permission.storage.request();
+      }
+
+      dir = Directory('/storage/emulated/0/ChaosCrypt');
     } else {
       final docDir = await getApplicationDocumentsDirectory();
       dir = Directory('${docDir.path}/ChaosCrypt');
     }
+
     if (!await dir.exists()) {
-      await dir.create(recursive: true);
+      try {
+        await dir.create(recursive: true);
+      } catch (e) {
+        debugPrint("Error creating directory: $e");
+      }
     }
     return dir;
   }
@@ -477,7 +493,7 @@ class CryptoService {
       final len = await file.length();
       if (len != dataSizeMB * 1024 * 1024) {
         fileExists = false;
-        await file.delete();
+        await _safeDelete(file);
       }
     }
 
@@ -577,13 +593,23 @@ class CryptoService {
       }
 
       // Cleanup enc file for next run
-      final fEnc = File(encPath);
-      if (await fEnc.exists()) await fEnc.delete();
+      await _safeDelete(File(encPath));
     }
 
     // Convert logic: keep the source file for next time?
     // User said: "Check if already exists, if not generate". implies KEEP IT.
     // So we do NOT delete 'file' (input).
+  }
+
+  static Future<void> _safeDelete(File file) async {
+    try {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      // Ignore errors during deletion (e.g. file already gone)
+      print('[CryptoService] Safe delete ignored error: $e');
+    }
   }
 
   static String _benchmarkIsolate(Map<String, dynamic> args) {
