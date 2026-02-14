@@ -1,3 +1,4 @@
+import 'dart:async'; // Add async for StreamSubscription
 import 'package:flutter/material.dart';
 // import '../main.dart'; // Unused
 import 'visual_encrypt/visual_encrypt_screen.dart';
@@ -5,6 +6,7 @@ import 'file_encrypt/file_encrypt_screen.dart';
 import 'benchmark/benchmark_screen.dart';
 import 'settings/settings_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:receive_sharing_intent/receive_sharing_intent.dart'; // Add import
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -16,6 +18,10 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 1; // 默认中间 tab（可视化加密）
   final _pageController = PageController(initialPage: 1);
+  final ValueNotifier<String?> _intentFileNotifier = ValueNotifier(
+    null,
+  ); // Add notifier
+  StreamSubscription? _intentSub; // Add sub
 
   @override
   void initState() {
@@ -23,6 +29,61 @@ class _MainShellState extends State<MainShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkPassword();
     });
+    _initIntentHandling(); // Init intent handling
+  }
+
+  void _initIntentHandling() {
+    // 1. Listen for new intents
+    _intentSub = ReceiveSharingIntent.instance.getMediaStream().listen(
+      (List<SharedMediaFile> value) {
+        if (value.isNotEmpty && value.first.path.isNotEmpty) {
+          _handleSharedFile(value.first.path);
+        }
+      },
+      onError: (err) {
+        debugPrint("getIntentDataStream error: $err");
+      },
+    );
+
+    // 2. Handle initial intent
+    ReceiveSharingIntent.instance.getInitialMedia().then((
+      List<SharedMediaFile> value,
+    ) {
+      if (value.isNotEmpty && value.first.path.isNotEmpty) {
+        _handleSharedFile(value.first.path);
+      }
+    });
+  }
+
+  void _handleSharedFile(String path) {
+    // Switch to File Encrypt tab
+    if (_currentIndex != 0) {
+      // Ensure controller is attached before jumping
+      if (_pageController.hasClients) {
+        _pageController.jumpToPage(0);
+      } else {
+        // If not attached (e.g. init), just update index, PageView will use initialPage if needed
+        // But since PageView uses controller, we rely on setState to update _currentIndex
+        // and if controller is not attached, it might be too early.
+        // We can retry after frame.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _pageController.hasClients) {
+            _pageController.jumpToPage(0);
+          }
+        });
+      }
+      setState(() => _currentIndex = 0);
+    }
+    // Update notifier to inform child
+    _intentFileNotifier.value = path;
+  }
+
+  @override
+  void dispose() {
+    _intentSub?.cancel(); // Cancel sub
+    _pageController.dispose();
+    _intentFileNotifier.dispose(); // Dispose notifier
+    super.dispose();
   }
 
   Future<void> _checkPassword() async {
@@ -80,17 +141,12 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
-  final _pages = const [
-    FileEncryptScreen(),
-    VisualEncryptScreen(),
-    BenchmarkScreen(),
+  List<Widget> get _pages => [
+    // Change to getter to use listener
+    FileEncryptScreen(intentFileNotifier: _intentFileNotifier),
+    const VisualEncryptScreen(),
+    const BenchmarkScreen(),
   ];
-
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -116,7 +172,7 @@ class _MainShellState extends State<MainShell> {
       body: PageView(
         controller: _pageController,
         onPageChanged: (index) => setState(() => _currentIndex = index),
-        children: _pages,
+        children: _pages, // Use getter
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(

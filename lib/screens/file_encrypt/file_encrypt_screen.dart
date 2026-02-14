@@ -4,19 +4,21 @@ import 'package:file_picker/file_picker.dart';
 
 import 'dart:async'; // Add async
 import 'package:share_plus/share_plus.dart';
-import 'package:receive_sharing_intent/receive_sharing_intent.dart'; // Add import
+// import 'package:receive_sharing_intent/receive_sharing_intent.dart'; // Removed internal usage
 import '../../core/services/crypto_service.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/format_utils.dart';
 
 class FileEncryptScreen extends StatefulWidget {
-  const FileEncryptScreen({super.key});
+  final ValueNotifier<String?>? intentFileNotifier;
+
+  const FileEncryptScreen({super.key, this.intentFileNotifier});
 
   @override
-  State<FileEncryptScreen> createState() => _FileEncryptScreenState();
+  State<FileEncryptScreen> createState() => FileEncryptScreenState();
 }
 
-class _FileEncryptScreenState extends State<FileEncryptScreen>
+class FileEncryptScreenState extends State<FileEncryptScreen>
     with SingleTickerProviderStateMixin {
   bool _isEncryptMode = true; // true=加密, false=解密
   String? _selectedFilePath;
@@ -24,63 +26,50 @@ class _FileEncryptScreenState extends State<FileEncryptScreen>
   bool _isProcessing = false;
   String? _resultPath;
   String? _resultMessage;
-  StreamSubscription? _intentSub; // Add subscription
 
   @override
   void initState() {
     super.initState();
-    _initIntentHandling();
-  }
-
-  void _initIntentHandling() {
-    // 1. Listen for new intents while running
-    _intentSub = ReceiveSharingIntent.instance.getMediaStream().listen(
-      (List<SharedMediaFile> value) {
-        if (value.isNotEmpty) {
-          _handleSharedFile(value.first);
-        }
-      },
-      onError: (err) {
-        debugPrint("getIntentDataStream error: $err");
-      },
-    );
-
-    // 2. Handle initial intent (cold start)
-    ReceiveSharingIntent.instance.getInitialMedia().then((
-      List<SharedMediaFile> value,
-    ) {
-      if (value.isNotEmpty) {
-        _handleSharedFile(value.first);
-      }
+    // Listen to external notifier
+    widget.intentFileNotifier?.addListener(_onIntentFileChanged);
+    // Check initial value
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _onIntentFileChanged();
     });
   }
 
-  void _handleSharedFile(SharedMediaFile file) {
-    if (file.path.isNotEmpty) {
+  @override
+  void dispose() {
+    widget.intentFileNotifier?.removeListener(_onIntentFileChanged);
+    super.dispose();
+  }
+
+  void _onIntentFileChanged() {
+    final path = widget.intentFileNotifier?.value;
+    if (path != null && path.isNotEmpty) {
+      handleSharedFile(path);
+      // Consume the event
+      widget.intentFileNotifier?.value = null;
+    }
+  }
+
+  // Public method to handle shared file path
+  void handleSharedFile(String path) {
+    if (path.isNotEmpty) {
       setState(() {
         _isEncryptMode = false; // Switch to Decrypt mode
-        _selectedFilePath = file.path;
-        _selectedFileName = file.path
-            .split(Platform.pathSeparator)
-            .last; // simple name
+        _selectedFilePath = path;
+        _selectedFileName = path.split(Platform.pathSeparator).last;
         _resultPath = null;
         _resultMessage = null;
-        // Do NOT call _processFile() automatically
       });
 
-      // Optionally show a snackbar saying "File loaded"
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('已加载文件: $_selectedFileName')));
       }
     }
-  }
-
-  @override
-  void dispose() {
-    _intentSub?.cancel();
-    super.dispose();
   }
 
   Future<void> _pickFile() async {
