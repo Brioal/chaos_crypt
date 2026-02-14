@@ -4,6 +4,7 @@ import 'visual_encrypt/visual_encrypt_screen.dart';
 import 'file_encrypt/file_encrypt_screen.dart';
 import 'benchmark/benchmark_screen.dart';
 import 'settings/settings_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -15,6 +16,69 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 1; // 默认中间 tab（可视化加密）
   final _pageController = PageController(initialPage: 1);
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkPassword();
+    });
+  }
+
+  Future<void> _checkPassword() async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = prefs.getString('encryption_key');
+    if (key == null || key.isEmpty) {
+      if (!mounted) return;
+      _showSetupPasswordDialog();
+    }
+  }
+
+  void _showSetupPasswordDialog() {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Text('设置初始密码'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('欢迎使用兰州大学混沌加密演示软件。\n为了您的数据安全，请设置一个初始加密密码（至少8位）。'),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: '密码',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                final pwd = controller.text;
+                if (pwd.length < 8) {
+                  ScaffoldMessenger.of(
+                    ctx,
+                  ).showSnackBar(const SnackBar(content: Text('密码长度不能少于8位')));
+                  return;
+                }
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString('encryption_key', pwd);
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   final _pages = const [
     FileEncryptScreen(),

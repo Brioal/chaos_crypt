@@ -2,7 +2,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 
+import 'dart:async'; // Add async
 import 'package:share_plus/share_plus.dart';
+import 'package:receive_sharing_intent/receive_sharing_intent.dart'; // Add import
 import '../../core/services/crypto_service.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/format_utils.dart';
@@ -22,13 +24,62 @@ class _FileEncryptScreenState extends State<FileEncryptScreen>
   bool _isProcessing = false;
   String? _resultPath;
   String? _resultMessage;
+  StreamSubscription? _intentSub; // Add subscription
+
   @override
   void initState() {
     super.initState();
+    _initIntentHandling();
+  }
+
+  void _initIntentHandling() {
+    // 1. Listen for new intents while running
+    _intentSub = ReceiveSharingIntent.instance.getMediaStream().listen(
+      (List<SharedMediaFile> value) {
+        if (value.isNotEmpty) {
+          _handleSharedFile(value.first);
+        }
+      },
+      onError: (err) {
+        debugPrint("getIntentDataStream error: $err");
+      },
+    );
+
+    // 2. Handle initial intent (cold start)
+    ReceiveSharingIntent.instance.getInitialMedia().then((
+      List<SharedMediaFile> value,
+    ) {
+      if (value.isNotEmpty) {
+        _handleSharedFile(value.first);
+      }
+    });
+  }
+
+  void _handleSharedFile(SharedMediaFile file) {
+    if (file.path.isNotEmpty) {
+      setState(() {
+        _isEncryptMode = false; // Switch to Decrypt mode
+        _selectedFilePath = file.path;
+        _selectedFileName = file.path
+            .split(Platform.pathSeparator)
+            .last; // simple name
+        _resultPath = null;
+        _resultMessage = null;
+        // Do NOT call _processFile() automatically
+      });
+
+      // Optionally show a snackbar saying "File loaded"
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已加载文件: $_selectedFileName')));
+      }
+    }
   }
 
   @override
   void dispose() {
+    _intentSub?.cancel();
     super.dispose();
   }
 
@@ -37,16 +88,32 @@ class _FileEncryptScreenState extends State<FileEncryptScreen>
     if (_isEncryptMode) {
       result = await FilePicker.platform.pickFiles();
     } else {
-      result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['lzu'],
-      );
+      result = await FilePicker.platform.pickFiles(type: FileType.any);
     }
 
     if (result != null && result.files.single.path != null) {
+      final path = result.files.single.path!;
+
+      // Validation for Decrypt mode
+      if (!_isEncryptMode) {
+        if (!path.toLowerCase().endsWith('.lzu')) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('不支持的文件类型：仅支持 .lzu 文件'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      final name = result.files.single.name;
+
       setState(() {
-        _selectedFilePath = result!.files.single.path;
-        _selectedFileName = result.files.single.name;
+        _selectedFilePath = path;
+        _selectedFileName = name;
         _resultPath = null;
         _resultMessage = null;
       });
@@ -75,15 +142,22 @@ class _FileEncryptScreenState extends State<FileEncryptScreen>
         result = await CryptoService.decryptFile(inputFile.path);
       }
 
-      final fileSize = await File(result.path).length();
+      final outSize = await File(result.path).length();
+      final inSize = await inputFile.length();
+      final name = result.path.split(Platform.pathSeparator).last;
 
       setState(() {
         _resultPath = result.path;
+        final inLabel = _isEncryptMode ? '原始大小' : '加密大小';
+        final outLabel = _isEncryptMode ? '加密大小' : '解密大小';
+
         _resultMessage =
-            'Time: ${FormatUtils.formatTime(result.timeMs)}\n'
-            'Speed: ${FormatUtils.formatSpeedGbps(result.speedGbps)}\n'
-            'Size: ${FormatUtils.formatSize(fileSize)}\n'
-            'Path: ${result.path}';
+            '文件名称: $name\n'
+            '耗时: ${FormatUtils.formatTime(result.timeMs)}\n'
+            '速度: ${FormatUtils.formatSpeedGbps(result.speedGbps)}\n'
+            '$inLabel: ${FormatUtils.formatSize(inSize)}\n'
+            '$outLabel: ${FormatUtils.formatSize(outSize)}\n'
+            '输出路径: ${result.path}';
       });
     } catch (e) {
       setState(() => _resultMessage = '操作失败: $e');
@@ -355,8 +429,6 @@ class _FileEncryptScreenState extends State<FileEncryptScreen>
                   Text(
                     _resultMessage ?? '',
                     style: theme.textTheme.bodyMedium?.copyWith(fontSize: 12),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
