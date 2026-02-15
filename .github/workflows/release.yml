@@ -59,10 +59,8 @@ jobs:
         if: success() && startsWith(github.ref, 'refs/tags/')
         uses: zcong1993/actions-ding@master
         with:
-          dingtalk_token: ${{ secrets.DINGTALK_TOKEN }}
-          dingtalk_secret: ${{ secrets.DINGTALK_SECRET }}
-          msg_type: markdown
-          content: |
+          dingToken: ${{ secrets.DINGTALK_TOKEN }}
+          body: |
             # 🚀 New Release Published
 
             **Version**: ${{ github.ref_name }}
@@ -74,10 +72,8 @@ jobs:
         if: success() && !startsWith(github.ref, 'refs/tags/')
         uses: zcong1993/actions-ding@master
         with:
-          dingtalk_token: ${{ secrets.DINGTALK_TOKEN }}
-          dingtalk_secret: ${{ secrets.DINGTALK_SECRET }}
-          msg_type: markdown
-          content: |
+          dingToken: ${{ secrets.DINGTALK_TOKEN }}
+          body: |
             # 🛠️ Build Success
 
             **Branch**: ${{ github.ref_name }}
