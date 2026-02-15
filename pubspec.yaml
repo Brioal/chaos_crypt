@@ -1,7 +1,7 @@
 name: chaos_crypt
 description: "基于混沌理论的高性能加密演示 APP"
 publish_to: "none"
-version: 1.0.1
+version: 1.0.2
 
 environment:
   sdk: ^3.10.1

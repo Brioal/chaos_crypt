@@ -297,4 +297,35 @@ extern "C" {
             return string_to_char("ERROR|" + result.errorMsg);
         }
     }
+
+    // Multi-threaded File Decryption (Android Only - OpenMP)
+    // Returns formatted string: "SUCCESS|time_ms|speed_mbps" or "ERROR|msg"
+    char* decrypt_file_mt(int threads, char* key, char* inputPath, char* outputPath) {
+        if (key == nullptr || inputPath == nullptr || outputPath == nullptr) return string_to_char("ERROR|Invalid arguments");
+        
+        std::string keyStr(key);
+        std::string input(inputPath);
+        std::string output(outputPath);
+
+        CHAOS_OPERATION_RESULT result;
+
+        #ifdef _OPENMP
+        result = decryptFileWithKey_OMP(threads, keyStr, input, output);
+        #else
+        // Fallback for non-OMP platforms
+        LOGI("OpenMP not supported, falling back to single thread");
+        result = decryptFileWithKey(keyStr, input, output);
+        #endif
+
+        if (result.success) {
+             // Calculate speed for decryption if not set (it might be set by OMP but verify)
+            if (result.speed == 0 && result.mill > 0) {
+                 result.speed = static_cast<float>(result.size) * 8 / 1024 / 1024 / 1024 / static_cast<float>(result.mill) * 1000;
+            }
+            std::string res = "SUCCESS|" + std::to_string(result.mill) + "|" + std::to_string(result.speed);
+            return string_to_char(res);
+        } else {
+            return string_to_char("ERROR|" + result.errorMsg);
+        }
+    }
 }

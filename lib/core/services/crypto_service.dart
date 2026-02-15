@@ -65,6 +65,12 @@ final EncryptFileMTDart _encryptFileMT = _nativeLib
     .lookup<NativeFunction<EncryptFileMTC>>('encrypt_file_mt')
     .asFunction();
 
+final EncryptFileMTDart _decryptFileMT = _nativeLib
+    .lookup<NativeFunction<EncryptFileMTC>>('decrypt_file_mt')
+    .asFunction();
+
+// ... (in class CryptoService)
+
 final FreeMemoryDart _freeMemory = _nativeLib
     .lookup<NativeFunction<FreeMemoryC>>('free_memory')
     .asFunction();
@@ -392,11 +398,27 @@ class CryptoService {
 
     final key = await _getStoredKey();
 
-    final result = await compute(_decryptFileIsolate, {
-      'key': key,
-      'input': inputPath,
-      'output': finalPath,
-    });
+    // Use stored thread count for decryption too!
+    // WARN: Thread count must match encryption thread count for successful decryption.
+    final threads = await _getThreadCount();
+
+    final String result;
+    if (threads > 1) {
+      result = await compute(_benchmarkIsolate, {
+        'useOMP': true,
+        'threads': threads,
+        'key': key,
+        'input': inputPath,
+        'output': finalPath,
+        'mode': 'decrypt',
+      });
+    } else {
+      result = await compute(_decryptFileIsolate, {
+        'key': key,
+        'input': inputPath,
+        'output': finalPath,
+      });
+    }
 
     stopwatch.stop();
     print(
@@ -404,18 +426,19 @@ class CryptoService {
     );
 
     if (result.startsWith("SUCCESS")) {
-      // decryptFile returns just "SUCCESS" in native_lib currently.
-      // Wait, native_lib.cpp line 262: return string_to_char("SUCCESS");
-      // So no stats for decryption in current native_lib!
-      // I should update native_lib.cpp to return stats for decryption too?
-      // Yes, otherwise I can't show stats.
-      // For now I'll use Dart stopwatch as fallback.
+      final parts = result.split('|');
+      int timeMs = 0;
+      double speed = 0.0;
+      if (parts.length >= 3) {
+        timeMs = int.tryParse(parts[1]) ?? stopwatch.elapsedMilliseconds;
+        speed = double.tryParse(parts[2]) ?? 0.0;
+      }
 
       return CryptoResult(
         path: finalPath,
         success: true,
-        timeMs: stopwatch.elapsedMilliseconds,
-        speedGbps: 0.0, // unknown from native
+        timeMs: timeMs,
+        speedGbps: speed,
       );
     } else {
       print('[CryptoService] Decryption FAILED: $result');
@@ -635,13 +658,16 @@ class CryptoService {
       final keyPtr = (args['key'] as String).toNativeUtf8();
       final inputPtr = (args['input'] as String).toNativeUtf8();
       final outputPtr = (args['output'] as String).toNativeUtf8();
+      final isDecrypt = args['mode'] == 'decrypt';
+      final threads = args['threads'] as int;
+
       try {
-        final resPtr = _encryptFileMT(
-          args['threads'],
-          keyPtr,
-          inputPtr,
-          outputPtr,
-        );
+        final Pointer<Utf8> resPtr;
+        if (isDecrypt) {
+          resPtr = _decryptFileMT(threads, keyPtr, inputPtr, outputPtr);
+        } else {
+          resPtr = _encryptFileMT(threads, keyPtr, inputPtr, outputPtr);
+        }
         final res = resPtr.toDartString();
         _freeMemory(resPtr.cast());
         return res;
