@@ -512,14 +512,32 @@ class CryptoService {
       final sink = file.openWrite();
       int written = 0;
       final totalBytes = dataSizeMB * 1024 * 1024;
+      int chunksWritten = 0;
 
-      while (written < totalBytes) {
-        int toWrite = totalBytes - written;
-        if (toWrite > chunkSize) toWrite = chunkSize;
-        sink.add(chunk.sublist(0, toWrite));
-        written += toWrite;
+      try {
+        while (written < totalBytes) {
+          int toWrite = totalBytes - written;
+          if (toWrite > chunkSize) toWrite = chunkSize;
+
+          if (toWrite == chunkSize) {
+            sink.add(chunk);
+          } else {
+            sink.add(chunk.sublist(0, toWrite));
+          }
+          written += toWrite;
+          chunksWritten++;
+
+          // Flush every ~16MB to prevent OOM
+          if (chunksWritten % 4 == 0) {
+            await sink.flush();
+            // Yield to event loop to prevent UI freeze and allow GC
+            await Future.delayed(Duration.zero);
+          }
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
       }
-      await sink.close();
     }
 
     // 2. Run Encryption Loop
