@@ -42,38 +42,37 @@ jobs:
           name: app-release
           path: build/app/outputs/flutter-apk/app-release.apk
 
+      - name: Read version from pubspec.yaml
+        id: version
+        run: |
+          # Read version from pubspec.yaml and strip carriage returns
+          version=$(grep '^version:' pubspec.yaml | sed 's/version:[ ]*//' | tr -d '\r')
+          echo "VERSION=$version" >> $GITHUB_ENV
+          echo "Detected version: $version"
+
       - name: Create Release and Upload APK
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
         with:
+          tag_name: "v${{ env.VERSION }}"
+          name: "Release v${{ env.VERSION }}"
           files: build/app/outputs/flutter-apk/app-release.apk
           generate_release_notes: true
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Send DingTalk Notification (Release)
-        if: success() && startsWith(github.ref, 'refs/tags/')
+      - name: Send DingTalk Notification
+        if: success()
         uses: zcong1993/actions-ding@master
         with:
           dingToken: ${{ secrets.DINGTALK_TOKEN }}
+          ignoreError: true
           body: |
-            # 🚀 New Release Published
-
-            **Version**: ${{ github.ref_name }}
-            **Repository**: ${{ github.repository }}
-
-            [Click here to view release](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }})
-
-      - name: Send DingTalk Notification (Build)
-        if: success() && !startsWith(github.ref, 'refs/tags/')
-        uses: zcong1993/actions-ding@master
-        with:
-          dingToken: ${{ secrets.DINGTALK_TOKEN }}
-          body: |
-            # 🛠️ Build Success
-
-            **Branch**: ${{ github.ref_name }}
-            **Commit**: ${{ github.sha }}
-            **Repository**: ${{ github.repository }}
-
-            [Click here to download artifact](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "ChaosCrypt Release Published - v${{ env.VERSION }}",
+                "text": "# ChaosCrypt Release Published\n\n**Version**: v${{ env.VERSION }}\n**Branch**: ${{ github.ref_name }}\n**Commit**: ${{ github.sha }}\n**Repository**: ${{ github.repository }}\n\n[Click here to view release](${{ github.server_url }}/${{ github.repository }}/releases/tag/v${{ env.VERSION }})"
+              }
+            }
