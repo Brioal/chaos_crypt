@@ -1,10 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-
-import 'dart:async'; // Add async
+import 'dart:async';
 import 'package:share_plus/share_plus.dart';
-// import 'package:receive_sharing_intent/receive_sharing_intent.dart'; // Removed internal usage
+import 'package:open_filex/open_filex.dart'; // Added import
 import '../../core/services/crypto_service.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/format_utils.dart';
@@ -160,6 +159,29 @@ class FileEncryptScreenState extends State<FileEncryptScreen>
     await Share.shareXFiles([
       XFile(_resultPath!),
     ], text: _isEncryptMode ? 'ChaosCrypt 加密文件 (.lzu)' : 'ChaosCrypt 解密文件');
+  }
+
+  // Added View File method
+  Future<void> _viewFile(String path) async {
+    try {
+      final result = await OpenFilex.open(path);
+      if (result.type != ResultType.done) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('打开文件失败: ${result.message}'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('打开文件出错: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   @override
@@ -349,6 +371,21 @@ class FileEncryptScreenState extends State<FileEncryptScreen>
               ),
               textAlign: TextAlign.center,
             ),
+            if (_selectedFilePath != null) ...[
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () => _viewFile(_selectedFilePath!),
+                icon: const Icon(Icons.visibility_outlined, size: 18),
+                label: const Text('系统查看'),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  backgroundColor: theme.colorScheme.surfaceVariant,
+                ),
+              ),
+            ],
             if (_selectedFilePath == null) ...[
               const SizedBox(height: 4),
               Text(
@@ -388,40 +425,63 @@ class FileEncryptScreenState extends State<FileEncryptScreen>
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isSuccess
-                    ? AppColors.green.withValues(alpha: 0.15)
-                    : AppColors.red.withValues(alpha: 0.15),
-              ),
-              child: Icon(
-                isSuccess ? Icons.check_circle : Icons.error,
-                color: isSuccess ? AppColors.green : AppColors.red,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    isSuccess ? '操作成功' : '操作失败',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      color: isSuccess ? AppColors.green : AppColors.red,
-                    ),
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isSuccess
+                        ? AppColors.green.withValues(alpha: 0.15)
+                        : AppColors.red.withValues(alpha: 0.15),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    _resultMessage ?? '',
-                    style: theme.textTheme.bodyMedium?.copyWith(fontSize: 12),
+                  child: Icon(
+                    isSuccess ? Icons.check_circle : Icons.error,
+                    color: isSuccess ? AppColors.green : AppColors.red,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isSuccess ? '操作成功' : '操作失败',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: isSuccess ? AppColors.green : AppColors.red,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _resultMessage ?? '',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (isSuccess && _resultPath != null) ...[
+              const SizedBox(height: 12),
+              // Separator
+              const Divider(height: 1, thickness: 0.5),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => _viewFile(_resultPath!),
+                    icon: const Icon(Icons.open_in_new, size: 18),
+                    label: const Text('系统查看'),
                   ),
                 ],
               ),
-            ),
+            ],
           ],
         ),
       ),
