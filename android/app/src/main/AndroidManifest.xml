@@ -41,9 +41,24 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="content"/>
+                <data android:mimeType="image/*"/>
+                <data android:pathPattern=".*\\.lzu\\.png"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
                 <data android:scheme="file"/>
                 <data android:mimeType="*/*"/>
                 <data android:pathPattern=".*\\.lzu"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="file"/>
+                <data android:mimeType="image/*"/>
+                <data android:pathPattern=".*\\.lzu\\.png"/>
             </intent-filter>
             <!-- Add SHARE support -->
             <intent-filter>

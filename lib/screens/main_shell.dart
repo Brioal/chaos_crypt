@@ -21,6 +21,7 @@ class _MainShellState extends State<MainShell> {
   final ValueNotifier<String?> _intentFileNotifier = ValueNotifier(
     null,
   ); // Add notifier
+  final ValueNotifier<String?> _intentImageNotifier = ValueNotifier(null);
   StreamSubscription? _intentSub; // Add sub
 
   @override
@@ -56,26 +57,27 @@ class _MainShellState extends State<MainShell> {
   }
 
   void _handleSharedFile(String path) {
-    // Switch to File Encrypt tab
-    if (_currentIndex != 0) {
-      // Ensure controller is attached before jumping
+    final lower = path.toLowerCase();
+    final targetIndex = lower.endsWith('.lzu.png') ? 1 : 0;
+
+    if (_currentIndex != targetIndex) {
       if (_pageController.hasClients) {
-        _pageController.jumpToPage(0);
+        _pageController.jumpToPage(targetIndex);
       } else {
-        // If not attached (e.g. init), just update index, PageView will use initialPage if needed
-        // But since PageView uses controller, we rely on setState to update _currentIndex
-        // and if controller is not attached, it might be too early.
-        // We can retry after frame.
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && _pageController.hasClients) {
-            _pageController.jumpToPage(0);
+            _pageController.jumpToPage(targetIndex);
           }
         });
       }
-      setState(() => _currentIndex = 0);
+      setState(() => _currentIndex = targetIndex);
     }
-    // Update notifier to inform child
-    _intentFileNotifier.value = path;
+
+    if (targetIndex == 1) {
+      _intentImageNotifier.value = path;
+    } else {
+      _intentFileNotifier.value = path;
+    }
   }
 
   @override
@@ -83,6 +85,7 @@ class _MainShellState extends State<MainShell> {
     _intentSub?.cancel(); // Cancel sub
     _pageController.dispose();
     _intentFileNotifier.dispose(); // Dispose notifier
+    _intentImageNotifier.dispose();
     super.dispose();
   }
 
@@ -144,7 +147,7 @@ class _MainShellState extends State<MainShell> {
   List<Widget> get _pages => [
     // Change to getter to use listener
     FileEncryptScreen(intentFileNotifier: _intentFileNotifier),
-    const VisualEncryptScreen(),
+    VisualEncryptScreen(intentImageNotifier: _intentImageNotifier),
     const BenchmarkScreen(),
   ];
 

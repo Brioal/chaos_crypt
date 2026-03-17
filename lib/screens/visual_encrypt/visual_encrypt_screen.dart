@@ -1,17 +1,22 @@
+import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
-import 'package:path_provider/path_provider.dart';
-import 'dart:io';
-import '../../core/services/crypto_service.dart';
 
-import 'widgets/image_compare_widget.dart';
+import '../../core/services/crypto_service.dart';
 import 'widgets/histogram_widget.dart';
+import 'widgets/image_compare_widget.dart';
+import 'widgets/password_dialog.dart';
 
 class VisualEncryptScreen extends StatefulWidget {
-  const VisualEncryptScreen({super.key});
+  final ValueNotifier<String?>? intentImageNotifier;
+
+  const VisualEncryptScreen({super.key, this.intentImageNotifier});
 
   @override
   State<VisualEncryptScreen> createState() => _VisualEncryptScreenState();
@@ -19,14 +24,19 @@ class VisualEncryptScreen extends StatefulWidget {
 
 class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     with SingleTickerProviderStateMixin {
-  Uint8List? _originalBytes;
-  Uint8List? _encryptedBytes;
-  Map<String, List<int>>? _originalHist;
-  Map<String, List<int>>? _encryptedHist;
+  Uint8List? _leftBytes;
+  Uint8List? _rightBytes;
+  Map<String, List<int>>? _leftHist;
+  Map<String, List<int>>? _rightHist;
+
+  bool _isEncryptMode = true;
   bool _isProcessing = false;
   String? _sourceName;
-  late AnimationController _pulseController;
+  String? _resultPath;
+  String? _decryptInputPath;
+  String? _statusMessage;
 
+  late AnimationController _pulseController;
   final _picker = ImagePicker();
 
   @override
@@ -36,12 +46,59 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
+
+    widget.intentImageNotifier?.addListener(_onIntentImageChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _onIntentImageChanged();
+    });
   }
 
   @override
   void dispose() {
+    widget.intentImageNotifier?.removeListener(_onIntentImageChanged);
     _pulseController.dispose();
     super.dispose();
+  }
+
+  void _onIntentImageChanged() {
+    final path = widget.intentImageNotifier?.value;
+    if (path == null || path.isEmpty) {
+      return;
+    }
+    widget.intentImageNotifier?.value = null;
+
+    if (!path.toLowerCase().endsWith('.lzu.png')) {
+      _showError('不支持的图片类型，仅支持 .lzu.png');
+      return;
+    }
+
+    _switchMode(false);
+    _decryptInputPath = path;
+    _decryptFromLzuPng(path);
+  }
+
+  void _switchMode(bool toEncrypt) {
+    setState(() {
+      _isEncryptMode = toEncrypt;
+      _leftBytes = null;
+      _rightBytes = null;
+      _leftHist = null;
+      _rightHist = null;
+      _sourceName = null;
+      _resultPath = null;
+      _statusMessage = null;
+      _decryptInputPath = null;
+    });
+  }
+
+  Future<String?> _askPassword(String title) async {
+    final defaultKey = await CryptoService.getStoredKeyForUi();
+    if (!mounted) return null;
+
+    return showDialog<String>(
+      context: context,
+      builder: (_) => PasswordDialog(title: title, defaultKey: defaultKey),
+    );
   }
 
   Future<void> _loadSampleImage(String name) async {
@@ -49,23 +106,35 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     try {
       final data = await rootBundle.load('assets/images/$name.png');
       final bytes = data.buffer.asUint8List();
-      await _processImage(bytes, name);
+      final tempPath =
+          '${Directory.systemTemp.path}${Platform.pathSeparator}${name}_${DateTime.now().millisecondsSinceEpoch}.png';
+      final tempFile = File(tempPath);
+      await tempFile.writeAsBytes(bytes, flush: true);
+      await _encryptFromPath(tempPath, sourceName: name);
+      await _safeDelete(tempFile);
     } catch (e) {
       _showError('加载样本图失败: $e');
     }
-    setState(() => _isProcessing = false);
+    if (mounted) {
+      setState(() => _isProcessing = false);
+    }
   }
 
   Future<void> _pickFromCamera() async {
     final picked = await _picker.pickImage(
       source: ImageSource.camera,
-      maxWidth: 512,
-      maxHeight: 512,
+      maxWidth: 2048,
+      maxHeight: 2048,
     );
-    if (picked != null) {
-      setState(() => _isProcessing = true);
-      final bytes = await picked.readAsBytes();
-      await _processImage(bytes, '拍摄照片');
+    if (picked == null) return;
+
+    setState(() => _isProcessing = true);
+    try {
+      await _encryptFromPath(picked.path, sourceName: '拍摄照片');
+    } catch (e) {
+      _showError('加密失败: $e');
+    }
+    if (mounted) {
       setState(() => _isProcessing = false);
     }
   }
@@ -73,42 +142,109 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
   Future<void> _pickFromGallery() async {
     final picked = await _picker.pickImage(
       source: ImageSource.gallery,
-      maxWidth: 512,
-      maxHeight: 512,
+      maxWidth: 2048,
+      maxHeight: 2048,
     );
-    if (picked != null) {
-      setState(() => _isProcessing = true);
-      final bytes = await picked.readAsBytes();
-      await _processImage(bytes, '相册图片');
+    if (picked == null) return;
+
+    setState(() => _isProcessing = true);
+    try {
+      await _encryptFromPath(picked.path, sourceName: '相册图片');
+    } catch (e) {
+      _showError('加密失败: $e');
+    }
+    if (mounted) {
       setState(() => _isProcessing = false);
     }
   }
 
-  Future<void> _processImage(Uint8List bytes, String name) async {
-    // 模拟加密延迟
-    // await Future.delayed(const Duration(milliseconds: 300)); // Remove fake delay, real encryption takes time
-    final encrypted = await CryptoService.encryptImageBytes(bytes);
-    final origHist = await CryptoService.computeHistogram(bytes);
-    final encHist = await CryptoService.computeHistogram(encrypted);
+  Future<void> _encryptFromPath(
+    String imagePath, {
+    required String sourceName,
+  }) async {
+    final key = await _askPassword('图片加密密码');
+    if (key == null || key.isEmpty) return;
 
-    if (mounted) {
+    final originalBytes = await File(imagePath).readAsBytes();
+    final result = await CryptoService.encryptImageFileToLzuPng(
+      inputPath: imagePath,
+      outputBaseName: p.basename(imagePath),
+      key: key,
+    );
+
+    final leftHist = await CryptoService.computeHistogram(originalBytes);
+    final rightHist = await CryptoService.computeHistogram(
+      result.previewPngBytes,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _leftBytes = originalBytes;
+      _rightBytes = result.previewPngBytes;
+      _leftHist = leftHist;
+      _rightHist = rightHist;
+      _sourceName = sourceName;
+      _resultPath = result.path;
+      _statusMessage = '输出路径: ${result.path}';
+    });
+  }
+
+  Future<void> _pickDecryptFile() async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.any);
+    if (result == null || result.files.single.path == null) return;
+
+    final path = result.files.single.path!;
+    if (!path.toLowerCase().endsWith('.lzu.png')) {
+      _showError('仅支持 .lzu.png 文件');
+      return;
+    }
+
+    setState(() {
+      _decryptInputPath = path;
+    });
+    await _decryptFromLzuPng(path);
+  }
+
+  Future<void> _decryptFromLzuPng(String path) async {
+    setState(() => _isProcessing = true);
+    try {
+      final key = await _askPassword('图片解密密码');
+      if (key == null || key.isEmpty) return;
+
+      final encryptedPreview = await File(path).readAsBytes();
+      final result = await CryptoService.decryptLzuPngToImage(
+        inputPath: path,
+        key: key,
+      );
+
+      if (!mounted) return;
       setState(() {
-        _originalBytes = bytes;
-        _encryptedBytes = encrypted;
-        _originalHist = origHist;
-        _encryptedHist = encHist;
-        _sourceName = name;
+        _leftBytes = encryptedPreview;
+        _rightBytes = result.decryptedImageBytes;
+        _leftHist = null;
+        _rightHist = null;
+        _sourceName = p.basename(path);
+        _resultPath = result.path;
+        _statusMessage =
+            '已解密: ${result.originalFileName}\n输出路径: ${result.path}';
+        _decryptInputPath = path;
       });
+    } catch (e) {
+      _showError('解密失败: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
     }
   }
 
   Future<void> _shareResult() async {
-    if (_encryptedBytes == null) return;
+    if (_resultPath == null) return;
     try {
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/encrypted_${_sourceName ?? "image"}.png');
-      await file.writeAsBytes(_encryptedBytes!);
-      await Share.shareXFiles([XFile(file.path)], text: 'ChaosCrypt 加密图像');
+      await Share.shareXFiles(
+        [XFile(_resultPath!)],
+        text: _isEncryptMode ? 'ChaosCrypt 加密图像 (.lzu.png)' : 'ChaosCrypt 解密图像',
+      );
     } catch (e) {
       _showError('分享失败: $e');
     }
@@ -121,6 +257,12 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     );
   }
 
+  Future<void> _safeDelete(File file) async {
+    if (await file.exists()) {
+      await file.delete();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -131,7 +273,6 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
       body: SafeArea(
         child: CustomScrollView(
           slivers: [
-            // ── 标题栏 ──
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
@@ -160,9 +301,11 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('可视化加密', style: theme.textTheme.headlineMedium),
+                          Text('图像加密', style: theme.textTheme.headlineMedium),
                           Text(
-                            'Visual Encryption Demo',
+                            _isEncryptMode
+                                ? 'Image Encryption (.lzu.png)'
+                                : 'Image Decryption (.lzu.png)',
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: isDark
                                   ? primaryColor.withValues(alpha: 0.7)
@@ -177,7 +320,6 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
               ),
             ),
 
-            // ── 图片来源选择 ──
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.symmetric(
@@ -186,51 +328,28 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                 ),
                 child: Card(
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    padding: const EdgeInsets.all(6),
+                    child: Row(
                       children: [
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.image_search,
-                              size: 18,
-                              color: primaryColor,
-                            ),
-                            const SizedBox(width: 8),
-                            Text('选择图片源', style: theme.textTheme.titleMedium),
-                          ],
+                        Expanded(
+                          child: _ModeButton(
+                            label: '加密',
+                            icon: Icons.lock_outline,
+                            isSelected: _isEncryptMode,
+                            onTap: _isProcessing
+                                ? null
+                                : () => _switchMode(true),
+                          ),
                         ),
-                        const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            _SourceChip(
-                              icon: Icons.camera_alt,
-                              label: '拍照',
-                              onTap: _isProcessing ? null : _pickFromCamera,
-                            ),
-                            _SourceChip(
-                              icon: Icons.photo_library,
-                              label: '相册',
-                              onTap: _isProcessing ? null : _pickFromGallery,
-                            ),
-                            _SourceChip(
-                              icon: Icons.science,
-                              label: 'Lena',
-                              onTap: _isProcessing
-                                  ? null
-                                  : () => _loadSampleImage('lena'),
-                            ),
-                            _SourceChip(
-                              icon: Icons.pets,
-                              label: 'Mandrill',
-                              onTap: _isProcessing
-                                  ? null
-                                  : () => _loadSampleImage('mandrill'),
-                            ),
-                          ],
+                        Expanded(
+                          child: _ModeButton(
+                            label: '解密',
+                            icon: Icons.lock_open,
+                            isSelected: !_isEncryptMode,
+                            onTap: _isProcessing
+                                ? null
+                                : () => _switchMode(false),
+                          ),
                         ),
                       ],
                     ),
@@ -239,7 +358,125 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
               ),
             ),
 
-            // ── 处理中指示 ──
+            if (_isEncryptMode)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.image_search,
+                                size: 18,
+                                color: primaryColor,
+                              ),
+                              const SizedBox(width: 8),
+                              Text('选择图片源', style: theme.textTheme.titleMedium),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _SourceChip(
+                                icon: Icons.camera_alt,
+                                label: '拍照',
+                                onTap: _isProcessing ? null : _pickFromCamera,
+                              ),
+                              _SourceChip(
+                                icon: Icons.photo_library,
+                                label: '相册',
+                                onTap: _isProcessing ? null : _pickFromGallery,
+                              ),
+                              _SourceChip(
+                                icon: Icons.science,
+                                label: 'Lena',
+                                onTap: _isProcessing
+                                    ? null
+                                    : () => _loadSampleImage('lena'),
+                              ),
+                              _SourceChip(
+                                icon: Icons.pets,
+                                label: 'Mandrill',
+                                onTap: _isProcessing
+                                    ? null
+                                    : () => _loadSampleImage('mandrill'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            '输出命名: 原文件名 + .lzu.png（例如 photo.jpg.lzu.png）',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            if (!_isEncryptMode)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.folder_open,
+                                size: 18,
+                                color: primaryColor,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '选择 .lzu.png 文件',
+                                style: theme.textTheme.titleMedium,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _isProcessing
+                                  ? null
+                                  : _pickDecryptFile,
+                              icon: const Icon(Icons.upload_file),
+                              label: const Text('从文件系统选择密文图'),
+                            ),
+                          ),
+                          if (_decryptInputPath != null) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              p.basename(_decryptInputPath!),
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
             if (_isProcessing)
               SliverToBoxAdapter(
                 child: Padding(
@@ -249,7 +486,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                       children: [
                         AnimatedBuilder(
                           animation: _pulseController,
-                          builder: (_, __) => Container(
+                          builder: (context, child) => Container(
                             width: 60,
                             height: 60,
                             decoration: BoxDecoration(
@@ -271,15 +508,19 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                           ),
                         ),
                         const SizedBox(height: 16),
-                        Text('混沌置乱加密中...', style: theme.textTheme.bodyMedium),
+                        Text(
+                          _isEncryptMode ? '图像加密处理中...' : '图像解密处理中...',
+                          style: theme.textTheme.bodyMedium,
+                        ),
                       ],
                     ),
                   ),
                 ),
               ),
 
-            // ── 图片对比 ──
-            if (_originalBytes != null && _encryptedBytes != null) ...[
+            if (_isEncryptMode &&
+                _leftBytes != null &&
+                _rightBytes != null) ...[
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
@@ -287,28 +528,83 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                     vertical: 4,
                   ),
                   child: ImageCompareWidget(
-                    originalBytes: _originalBytes!,
-                    encryptedBytes: _encryptedBytes!,
+                    originalBytes: _leftBytes!,
+                    encryptedBytes: _rightBytes!,
                     sourceName: _sourceName ?? '',
                   ),
                 ),
               ),
+              if (_leftHist != null && _rightHist != null)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 4,
+                    ),
+                    child: HistogramWidget(
+                      originalHist: _leftHist!,
+                      encryptedHist: _rightHist!,
+                    ),
+                  ),
+                ),
+            ],
 
-              // ── 直方图 ──
+            if (!_isEncryptMode && _leftBytes != null && _rightBytes != null)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 16,
                     vertical: 4,
                   ),
-                  child: HistogramWidget(
-                    originalHist: _originalHist!,
-                    encryptedHist: _encryptedHist!,
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('解密结果预览', style: theme.textTheme.titleMedium),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _ImagePanel(
+                                  bytes: _leftBytes!,
+                                  label: '密文图',
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _ImagePanel(
+                                  bytes: _rightBytes!,
+                                  label: '明文图',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
 
-              // ── 分享按钮 ──
+            if (_statusMessage != null)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        _statusMessage!,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            if (_resultPath != null)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
@@ -317,15 +613,13 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                     child: ElevatedButton.icon(
                       onPressed: _shareResult,
                       icon: const Icon(Icons.share),
-                      label: const Text('分享加密结果'),
+                      label: Text(_isEncryptMode ? '分享加密结果' : '分享解密结果'),
                     ),
                   ),
                 ),
               ),
-            ],
 
-            // ── 空状态 ──
-            if (_originalBytes == null && !_isProcessing)
+            if (_leftBytes == null && !_isProcessing)
               SliverFillRemaining(
                 hasScrollBody: false,
                 child: Center(
@@ -334,10 +628,12 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                     children: [
                       AnimatedBuilder(
                         animation: _pulseController,
-                        builder: (_, __) => Opacity(
+                        builder: (context, child) => Opacity(
                           opacity: 0.3 + _pulseController.value * 0.4,
                           child: Icon(
-                            Icons.lock_outline,
+                            _isEncryptMode
+                                ? Icons.lock_outline
+                                : Icons.lock_open,
                             size: 80,
                             color: primaryColor.withValues(alpha: 0.3),
                           ),
@@ -345,7 +641,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        '选择一张图片开始加密演示',
+                        _isEncryptMode ? '选择一张图片开始加密' : '选择 .lzu.png 开始解密',
                         style: theme.textTheme.bodyMedium?.copyWith(
                           color: isDark ? Colors.white38 : Colors.black38,
                         ),
@@ -354,6 +650,74 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                   ),
                 ),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool isSelected;
+  final VoidCallback? onTap;
+
+  const _ModeButton({
+    required this.label,
+    required this.icon,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final primary = theme.colorScheme.primary;
+
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          gradient: isSelected
+              ? LinearGradient(
+                  colors: isDark
+                      ? [
+                          primary.withValues(alpha: 0.3),
+                          primary.withValues(alpha: 0.1),
+                        ]
+                      : [
+                          primary.withValues(alpha: 0.15),
+                          primary.withValues(alpha: 0.05),
+                        ],
+                )
+              : null,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 18,
+              color: isSelected
+                  ? primary
+                  : (isDark ? Colors.white38 : Colors.black38),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
+                color: isSelected
+                    ? primary
+                    : (isDark ? Colors.white38 : Colors.black38),
+                fontSize: 14,
+              ),
+            ),
           ],
         ),
       ),
@@ -404,6 +768,35 @@ class _SourceChip extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ImagePanel extends StatelessWidget {
+  final Uint8List bytes;
+  final String label;
+
+  const _ImagePanel({required this.bytes, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.memory(
+            bytes,
+            fit: BoxFit.cover,
+            height: 150,
+            width: double.infinity,
+            gaplessPlayback: true,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(label, style: theme.textTheme.bodySmall),
+      ],
     );
   }
 }

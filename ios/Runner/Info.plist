@@ -63,6 +63,18 @@
 				<string>com.lzu.chaoscrypt.lzu</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>ChaosCrypt Encrypted Image</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.lzu.chaoscrypt.lzu-png</string>
+			</array>
+		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
@@ -80,6 +92,23 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>lzu</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.png</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>ChaosCrypt Encrypted Image</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.lzu.chaoscrypt.lzu-png</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>lzu.png</string>
 				</array>
 			</dict>
 		</dict>

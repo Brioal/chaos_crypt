@@ -1,7 +1,9 @@
 import 'dart:async';
-// import 'dart:convert'; // Unused
+import 'dart:convert';
 import 'dart:ffi'; // For FFI
 import 'dart:io'; // For Platform
+import 'dart:math';
+import 'dart:typed_data';
 import 'package:ffi/ffi.dart'; // For Utf8
 import 'package:flutter/foundation.dart'; // For compute
 import 'package:image/image.dart' as img;
@@ -109,8 +111,30 @@ class CryptoResult {
   });
 }
 
+class ImageEncryptResult {
+  final String path;
+  final Uint8List previewPngBytes;
+
+  ImageEncryptResult({required this.path, required this.previewPngBytes});
+}
+
+class ImageDecryptResult {
+  final String path;
+  final Uint8List decryptedImageBytes;
+  final String originalFileName;
+
+  ImageDecryptResult({
+    required this.path,
+    required this.decryptedImageBytes,
+    required this.originalFileName,
+  });
+}
+
 class CryptoService {
   static const String _defaultKey = "ChaosCryptDefaultKey123";
+  static const String _lzuPngMagic = 'LZUPNGV1';
+
+  static Future<String> getStoredKeyForUi() => _getStoredKey();
 
   static Future<String> _getStoredKey() async {
     final prefs = await SharedPreferences.getInstance();
@@ -279,8 +303,204 @@ class CryptoService {
     return Uint8List(0);
   }
 
+  static Future<ImageEncryptResult> encryptImageFileToLzuPng({
+    required String inputPath,
+    required String outputBaseName,
+    String? key,
+  }) async {
+    final sourceBytes = await File(inputPath).readAsBytes();
+    final sourceImage = img.decodeImage(sourceBytes);
+    if (sourceImage == null) {
+      throw Exception('仅支持可解码的图像文件');
+    }
+
+    final keyToUse = key ?? await _getStoredKey();
+    final tempDir = Directory.systemTemp;
+    final tempEncPath =
+        '${tempDir.path}/lzu_img_${DateTime.now().microsecondsSinceEpoch}.lzu';
+
+    try {
+      final nativeResult = await compute(_encryptFileWithKeyIsolate, {
+        'key': keyToUse,
+        'input': inputPath,
+        'output': tempEncPath,
+      });
+      if (!nativeResult.startsWith('SUCCESS')) {
+        throw Exception(nativeResult);
+      }
+
+      final encryptedPayload = await File(tempEncPath).readAsBytes();
+      final container = _buildLzuPngContainer(
+        originalFileName: p.basename(inputPath),
+        encryptedLzuBytes: encryptedPayload,
+      );
+      final previewPng = _containerToNoisePng(
+        container,
+        width: sourceImage.width,
+        height: sourceImage.height,
+      );
+
+      final outDir = await getOutputDirectory();
+      final outputPath = await _ensureUniquePath(
+        '${outDir.path}/$outputBaseName.lzu.png',
+      );
+      await File(outputPath).writeAsBytes(previewPng, flush: true);
+
+      return ImageEncryptResult(path: outputPath, previewPngBytes: previewPng);
+    } finally {
+      await _safeDelete(File(tempEncPath));
+    }
+  }
+
+  static Future<ImageDecryptResult> decryptLzuPngToImage({
+    required String inputPath,
+    String? key,
+  }) async {
+    final keyToUse = key ?? await _getStoredKey();
+    final inputBytes = await File(inputPath).readAsBytes();
+    final parsed = _extractContainerFromNoisePng(inputBytes);
+
+    final tempDir = Directory.systemTemp;
+    final tempEncPath =
+        '${tempDir.path}/lzu_png_${DateTime.now().microsecondsSinceEpoch}.lzu';
+    await File(tempEncPath).writeAsBytes(parsed.$2, flush: true);
+
+    final outDir = await getOutputDirectory();
+    final outputPath = await _ensureUniquePath('${outDir.path}/${parsed.$1}');
+
+    try {
+      final nativeResult = await compute(_decryptFileWithKeyIsolate, {
+        'key': keyToUse,
+        'input': tempEncPath,
+        'output': outputPath,
+      });
+      if (!nativeResult.startsWith('SUCCESS')) {
+        throw Exception(nativeResult);
+      }
+
+      final decryptedBytes = await File(outputPath).readAsBytes();
+      return ImageDecryptResult(
+        path: outputPath,
+        decryptedImageBytes: decryptedBytes,
+        originalFileName: parsed.$1,
+      );
+    } finally {
+      await _safeDelete(File(tempEncPath));
+    }
+  }
+
+  static Uint8List _buildLzuPngContainer({
+    required String originalFileName,
+    required Uint8List encryptedLzuBytes,
+  }) {
+    final fileNameBytes = utf8.encode(originalFileName);
+    final nameLenData = ByteData(2)..setUint16(0, fileNameBytes.length);
+    final payloadLenData = ByteData(4)..setUint32(0, encryptedLzuBytes.length);
+
+    final builder = BytesBuilder(copy: false);
+    builder.add(ascii.encode(_lzuPngMagic));
+    builder.add(nameLenData.buffer.asUint8List());
+    builder.add(payloadLenData.buffer.asUint8List());
+    builder.add(fileNameBytes);
+    builder.add(encryptedLzuBytes);
+    return builder.toBytes();
+  }
+
+  static (String, Uint8List) _extractContainerFromNoisePng(Uint8List pngBytes) {
+    final image = img.decodeImage(pngBytes);
+    if (image == null) {
+      throw Exception('不是可解码的 .lzu.png 图片');
+    }
+
+    final rgbBytes = Uint8List(image.width * image.height * 3);
+    int idx = 0;
+    for (final px in image) {
+      rgbBytes[idx++] = px.r.toInt();
+      rgbBytes[idx++] = px.g.toInt();
+      rgbBytes[idx++] = px.b.toInt();
+    }
+
+    if (rgbBytes.length < 4) {
+      throw Exception('密文图片数据长度不足');
+    }
+    final containerLen = ByteData.sublistView(rgbBytes, 0, 4).getUint32(0);
+    final totalNeed = 4 + containerLen;
+    if (containerLen <= 0 || totalNeed > rgbBytes.length) {
+      throw Exception('密文图片损坏或已被平台压缩重编码');
+    }
+
+    final container = rgbBytes.sublist(4, totalNeed);
+    if (container.length < 14) {
+      throw Exception('容器头损坏');
+    }
+
+    final magic = ascii.decode(container.sublist(0, 8), allowInvalid: true);
+    if (magic != _lzuPngMagic) {
+      throw Exception('不是 ChaosCrypt 生成的 .lzu.png 文件');
+    }
+
+    final nameLen = ByteData.sublistView(container, 8, 10).getUint16(0);
+    final payloadLen = ByteData.sublistView(container, 10, 14).getUint32(0);
+    final payloadStart = 14 + nameLen;
+    final payloadEnd = payloadStart + payloadLen;
+    if (payloadEnd > container.length || nameLen <= 0 || payloadLen <= 0) {
+      throw Exception('容器元数据无效，文件可能已损坏');
+    }
+
+    final fileName = utf8.decode(
+      container.sublist(14, 14 + nameLen),
+      allowMalformed: true,
+    );
+    final encryptedLzu = container.sublist(payloadStart, payloadEnd);
+    return (fileName, Uint8List.fromList(encryptedLzu));
+  }
+
+  static Uint8List _containerToNoisePng(
+    Uint8List container, {
+    required int width,
+    required int height,
+  }) {
+    final safeWidth = width <= 0 ? 1 : width;
+    final minBytes = 4 + container.length;
+    final minPixels = (minBytes / 3).ceil();
+    final safeHeight = max(
+      height <= 0 ? 1 : height,
+      (minPixels / safeWidth).ceil(),
+    );
+
+    final totalBytes = safeWidth * safeHeight * 3;
+    final stream = Uint8List(totalBytes);
+    final random = Random();
+    for (int i = 0; i < totalBytes; i++) {
+      stream[i] = random.nextInt(256);
+    }
+
+    final lenData = ByteData(4)..setUint32(0, container.length);
+    stream.setRange(0, 4, lenData.buffer.asUint8List());
+    stream.setRange(4, 4 + container.length, container);
+
+    final output = img.Image(width: safeWidth, height: safeHeight);
+    int idx = 0;
+    for (int y = 0; y < safeHeight; y++) {
+      for (int x = 0; x < safeWidth; x++) {
+        output.setPixelRgb(x, y, stream[idx], stream[idx + 1], stream[idx + 2]);
+        idx += 3;
+      }
+    }
+    return Uint8List.fromList(img.encodePng(output));
+  }
+
   // Isolated entry point for file encryption
   static String _encryptFileIsolate(Map<String, dynamic> args) {
+    return _callFileFunc(
+      _encryptFile,
+      args['key'],
+      args['input'],
+      args['output'],
+    );
+  }
+
+  static String _encryptFileWithKeyIsolate(Map<String, dynamic> args) {
     return _callFileFunc(
       _encryptFile,
       args['key'],
@@ -472,6 +692,15 @@ class CryptoService {
   }
 
   static String _decryptFileIsolate(Map<String, dynamic> args) {
+    return _callFileFunc(
+      _decryptFile,
+      args['key'],
+      args['input'],
+      args['output'],
+    );
+  }
+
+  static String _decryptFileWithKeyIsolate(Map<String, dynamic> args) {
     return _callFileFunc(
       _decryptFile,
       args['key'],
