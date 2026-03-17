@@ -98,7 +98,7 @@
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>
-				<string>public.png</string>
+				<string>public.data</string>
 			</array>
 			<key>UTTypeDescription</key>
 			<string>ChaosCrypt Encrypted Image</string>
@@ -108,7 +108,7 @@
 			<dict>
 				<key>public.filename-extension</key>
 				<array>
-					<string>lzu.png</string>
+					<string>lzu_image</string>
 				</array>
 			</dict>
 		</dict>

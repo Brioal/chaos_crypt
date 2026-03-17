@@ -58,7 +58,8 @@ class _MainShellState extends State<MainShell> {
 
   void _handleSharedFile(String path) {
     final lower = path.toLowerCase();
-    final targetIndex = lower.endsWith('.lzu.png') ? 1 : 0;
+    final isVisualImage = lower.endsWith('.lzu_image');
+    final targetIndex = isVisualImage ? 1 : 0;
 
     if (_currentIndex != targetIndex) {
       if (_pageController.hasClients) {

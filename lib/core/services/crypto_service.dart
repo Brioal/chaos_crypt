@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ffi'; // For FFI
 import 'dart:io'; // For Platform
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:ffi/ffi.dart'; // For Utf8
 import 'package:flutter/foundation.dart'; // For compute
 import 'package:image/image.dart' as img;
@@ -130,9 +128,29 @@ class ImageDecryptResult {
   });
 }
 
+enum ImageDecryptErrorCode {
+  invalidExtension,
+  fileNotFound,
+  decryptFailed,
+  invalidOutputImage,
+}
+
+class ImageDecryptException implements Exception {
+  final ImageDecryptErrorCode code;
+  final String message;
+
+  const ImageDecryptException(this.code, this.message);
+
+  @override
+  String toString() => message;
+}
+
 class CryptoService {
   static const String _defaultKey = "ChaosCryptDefaultKey123";
-  static const String _lzuPngMagic = 'LZUPNGV1';
+  static const int _previewSide = 512;
+  static const int _previewChannels = 3;
+  static const int _previewPixelCount = _previewSide * _previewSide;
+  static const int _previewByteCount = _previewPixelCount * _previewChannels;
 
   static Future<String> getStoredKeyForUi() => _getStoredKey();
 
@@ -303,191 +321,141 @@ class CryptoService {
     return Uint8List(0);
   }
 
-  static Future<ImageEncryptResult> encryptImageFileToLzuPng({
+  static Future<ImageEncryptResult> encryptImageFileToLzuImage({
     required String inputPath,
     required String outputBaseName,
-    String? key,
   }) async {
     final sourceBytes = await File(inputPath).readAsBytes();
-    final sourceImage = img.decodeImage(sourceBytes);
-    if (sourceImage == null) {
+    if (img.decodeImage(sourceBytes) == null) {
       throw Exception('仅支持可解码的图像文件');
     }
 
-    final keyToUse = key ?? await _getStoredKey();
-    final tempDir = Directory.systemTemp;
-    final tempEncPath =
-        '${tempDir.path}/lzu_img_${DateTime.now().microsecondsSinceEpoch}.lzu';
+    final keyToUse = await _getStoredKey();
+    final outDir = await getOutputDirectory();
+    final outputPath = await _ensureUniquePath(
+      '${outDir.path}/$outputBaseName.lzu_image',
+    );
 
-    try {
-      final nativeResult = await compute(_encryptFileWithKeyIsolate, {
-        'key': keyToUse,
-        'input': inputPath,
-        'output': tempEncPath,
-      });
-      if (!nativeResult.startsWith('SUCCESS')) {
-        throw Exception(nativeResult);
-      }
-
-      final encryptedPayload = await File(tempEncPath).readAsBytes();
-      final container = _buildLzuPngContainer(
-        originalFileName: p.basename(inputPath),
-        encryptedLzuBytes: encryptedPayload,
-      );
-      final previewPng = _containerToNoisePng(
-        container,
-        width: sourceImage.width,
-        height: sourceImage.height,
-      );
-
-      final outDir = await getOutputDirectory();
-      final outputPath = await _ensureUniquePath(
-        '${outDir.path}/$outputBaseName.lzu.png',
-      );
-      await File(outputPath).writeAsBytes(previewPng, flush: true);
-
-      return ImageEncryptResult(path: outputPath, previewPngBytes: previewPng);
-    } finally {
-      await _safeDelete(File(tempEncPath));
+    final nativeResult = await compute(_encryptFileWithKeyIsolate, {
+      'key': keyToUse,
+      'input': inputPath,
+      'output': outputPath,
+    });
+    if (!nativeResult.startsWith('SUCCESS')) {
+      throw Exception(nativeResult);
     }
+
+    final previewBytes = await _readFilePrefix(outputPath, _previewByteCount);
+    final previewPng = _buildCompressedPreviewPng(previewBytes);
+    return ImageEncryptResult(path: outputPath, previewPngBytes: previewPng);
   }
 
-  static Future<ImageDecryptResult> decryptLzuPngToImage({
+  static Future<Uint8List> buildEncryptedImagePreview(String inputPath) async {
+    final previewBytes = await _readFilePrefix(inputPath, _previewByteCount);
+    return _buildCompressedPreviewPng(previewBytes);
+  }
+
+  static Future<ImageDecryptResult> decryptLzuImageToImage({
     required String inputPath,
     String? key,
   }) async {
-    final keyToUse = key ?? await _getStoredKey();
-    final inputBytes = await File(inputPath).readAsBytes();
-    final parsed = _extractContainerFromNoisePng(inputBytes);
-
-    final tempDir = Directory.systemTemp;
-    final tempEncPath =
-        '${tempDir.path}/lzu_png_${DateTime.now().microsecondsSinceEpoch}.lzu';
-    await File(tempEncPath).writeAsBytes(parsed.$2, flush: true);
-
-    final outDir = await getOutputDirectory();
-    final outputPath = await _ensureUniquePath('${outDir.path}/${parsed.$1}');
-
-    try {
-      final nativeResult = await compute(_decryptFileWithKeyIsolate, {
-        'key': keyToUse,
-        'input': tempEncPath,
-        'output': outputPath,
-      });
-      if (!nativeResult.startsWith('SUCCESS')) {
-        throw Exception(nativeResult);
-      }
-
-      final decryptedBytes = await File(outputPath).readAsBytes();
-      return ImageDecryptResult(
-        path: outputPath,
-        decryptedImageBytes: decryptedBytes,
-        originalFileName: parsed.$1,
+    if (!inputPath.toLowerCase().endsWith('.lzu_image')) {
+      throw const ImageDecryptException(
+        ImageDecryptErrorCode.invalidExtension,
+        '仅支持 .lzu_image 文件',
       );
+    }
+
+    final inputFile = File(inputPath);
+    if (!await inputFile.exists()) {
+      throw const ImageDecryptException(
+        ImageDecryptErrorCode.fileNotFound,
+        '密文文件不存在或已被移动',
+      );
+    }
+
+    final keyToUse = key ?? await _getStoredKey();
+    final outDir = await getOutputDirectory();
+    final inputName = p.basename(inputPath);
+    final baseName = inputName.endsWith('.lzu_image')
+        ? inputName.substring(0, inputName.length - '.lzu_image'.length)
+        : '$inputName.decrypted';
+    final outputPath = await _ensureUniquePath('${outDir.path}/$baseName');
+
+    final nativeResult = await compute(_decryptFileWithKeyIsolate, {
+      'key': keyToUse,
+      'input': inputPath,
+      'output': outputPath,
+    });
+    if (!nativeResult.startsWith('SUCCESS')) {
+      throw ImageDecryptException(
+        ImageDecryptErrorCode.decryptFailed,
+        _mapDecryptFailureMessage(nativeResult),
+      );
+    }
+
+    final outputFile = File(outputPath);
+    final decryptedBytes = await outputFile.readAsBytes();
+    if (img.decodeImage(decryptedBytes) == null) {
+      await _safeDelete(outputFile);
+      throw const ImageDecryptException(
+        ImageDecryptErrorCode.invalidOutputImage,
+        '解密结果不是有效图片，可能密码不匹配或文件已损坏',
+      );
+    }
+
+    return ImageDecryptResult(
+      path: outputPath,
+      decryptedImageBytes: decryptedBytes,
+      originalFileName: baseName,
+    );
+  }
+
+  static String _mapDecryptFailureMessage(String nativeResult) {
+    final lower = nativeResult.toLowerCase();
+    if (lower.contains('crc') || lower.contains('checksum')) {
+      return '文件完整性校验失败，可能密文损坏或密码不匹配';
+    }
+    if (lower.contains('error') || lower.contains('fail')) {
+      return '解密失败，请确认使用了正确的全局默认密码';
+    }
+    return '解密失败: $nativeResult';
+  }
+
+  static Future<Uint8List> _readFilePrefix(String path, int maxBytes) async {
+    final file = File(path);
+    final raf = await file.open();
+    try {
+      final fileLength = await raf.length();
+      final bytesToRead = fileLength < maxBytes ? fileLength : maxBytes;
+      return await raf.read(bytesToRead);
     } finally {
-      await _safeDelete(File(tempEncPath));
+      await raf.close();
     }
   }
 
-  static Uint8List _buildLzuPngContainer({
-    required String originalFileName,
-    required Uint8List encryptedLzuBytes,
-  }) {
-    final fileNameBytes = utf8.encode(originalFileName);
-    final nameLenData = ByteData(2)..setUint16(0, fileNameBytes.length);
-    final payloadLenData = ByteData(4)..setUint32(0, encryptedLzuBytes.length);
-
-    final builder = BytesBuilder(copy: false);
-    builder.add(ascii.encode(_lzuPngMagic));
-    builder.add(nameLenData.buffer.asUint8List());
-    builder.add(payloadLenData.buffer.asUint8List());
-    builder.add(fileNameBytes);
-    builder.add(encryptedLzuBytes);
-    return builder.toBytes();
-  }
-
-  static (String, Uint8List) _extractContainerFromNoisePng(Uint8List pngBytes) {
-    final image = img.decodeImage(pngBytes);
-    if (image == null) {
-      throw Exception('不是可解码的 .lzu.png 图片');
-    }
-
-    final rgbBytes = Uint8List(image.width * image.height * 3);
-    int idx = 0;
-    for (final px in image) {
-      rgbBytes[idx++] = px.r.toInt();
-      rgbBytes[idx++] = px.g.toInt();
-      rgbBytes[idx++] = px.b.toInt();
-    }
-
-    if (rgbBytes.length < 4) {
-      throw Exception('密文图片数据长度不足');
-    }
-    final containerLen = ByteData.sublistView(rgbBytes, 0, 4).getUint32(0);
-    final totalNeed = 4 + containerLen;
-    if (containerLen <= 0 || totalNeed > rgbBytes.length) {
-      throw Exception('密文图片损坏或已被平台压缩重编码');
-    }
-
-    final container = rgbBytes.sublist(4, totalNeed);
-    if (container.length < 14) {
-      throw Exception('容器头损坏');
-    }
-
-    final magic = ascii.decode(container.sublist(0, 8), allowInvalid: true);
-    if (magic != _lzuPngMagic) {
-      throw Exception('不是 ChaosCrypt 生成的 .lzu.png 文件');
-    }
-
-    final nameLen = ByteData.sublistView(container, 8, 10).getUint16(0);
-    final payloadLen = ByteData.sublistView(container, 10, 14).getUint32(0);
-    final payloadStart = 14 + nameLen;
-    final payloadEnd = payloadStart + payloadLen;
-    if (payloadEnd > container.length || nameLen <= 0 || payloadLen <= 0) {
-      throw Exception('容器元数据无效，文件可能已损坏');
-    }
-
-    final fileName = utf8.decode(
-      container.sublist(14, 14 + nameLen),
-      allowMalformed: true,
-    );
-    final encryptedLzu = container.sublist(payloadStart, payloadEnd);
-    return (fileName, Uint8List.fromList(encryptedLzu));
-  }
-
-  static Uint8List _containerToNoisePng(
-    Uint8List container, {
-    required int width,
-    required int height,
-  }) {
-    final safeWidth = width <= 0 ? 1 : width;
-    final minBytes = 4 + container.length;
-    final minPixels = (minBytes / 3).ceil();
-    final safeHeight = max(
-      height <= 0 ? 1 : height,
-      (minPixels / safeWidth).ceil(),
-    );
-
-    final totalBytes = safeWidth * safeHeight * 3;
-    final stream = Uint8List(totalBytes);
+  static Uint8List _buildCompressedPreviewPng(Uint8List bytes) {
+    final preview = img.Image(width: _previewSide, height: _previewSide);
     final random = Random();
-    for (int i = 0; i < totalBytes; i++) {
-      stream[i] = random.nextInt(256);
+    int byteIndex = 0;
+
+    for (int pixelIndex = 0; pixelIndex < _previewPixelCount; pixelIndex++) {
+      final r = byteIndex < bytes.length
+          ? bytes[byteIndex++]
+          : random.nextInt(256);
+      final g = byteIndex < bytes.length
+          ? bytes[byteIndex++]
+          : random.nextInt(256);
+      final b = byteIndex < bytes.length
+          ? bytes[byteIndex++]
+          : random.nextInt(256);
+
+      final x = pixelIndex % _previewSide;
+      final y = pixelIndex ~/ _previewSide;
+      preview.setPixelRgb(x, y, r, g, b);
     }
 
-    final lenData = ByteData(4)..setUint32(0, container.length);
-    stream.setRange(0, 4, lenData.buffer.asUint8List());
-    stream.setRange(4, 4 + container.length, container);
-
-    final output = img.Image(width: safeWidth, height: safeHeight);
-    int idx = 0;
-    for (int y = 0; y < safeHeight; y++) {
-      for (int x = 0; x < safeWidth; x++) {
-        output.setPixelRgb(x, y, stream[idx], stream[idx + 1], stream[idx + 2]);
-        idx += 3;
-      }
-    }
-    return Uint8List.fromList(img.encodePng(output));
+    return Uint8List.fromList(img.encodePng(preview));
   }
 
   // Isolated entry point for file encryption

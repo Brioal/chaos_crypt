@@ -67,8 +67,8 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     }
     widget.intentImageNotifier?.value = null;
 
-    if (!path.toLowerCase().endsWith('.lzu.png')) {
-      _showError('不支持的图片类型，仅支持 .lzu.png');
+    if (!_isSupportedDecryptFile(path)) {
+      _showError('不支持的文件类型，仅支持 .lzu_image');
       return;
     }
 
@@ -91,13 +91,13 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     });
   }
 
-  Future<String?> _askPassword(String title) async {
+  Future<String?> _askDecryptPassword() async {
     final defaultKey = await CryptoService.getStoredKeyForUi();
     if (!mounted) return null;
 
     return showDialog<String>(
       context: context,
-      builder: (_) => PasswordDialog(title: title, defaultKey: defaultKey),
+      builder: (_) => PasswordDialog(title: '解密密码', defaultKey: defaultKey),
     );
   }
 
@@ -162,14 +162,10 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     String imagePath, {
     required String sourceName,
   }) async {
-    final key = await _askPassword('图片加密密码');
-    if (key == null || key.isEmpty) return;
-
     final originalBytes = await File(imagePath).readAsBytes();
-    final result = await CryptoService.encryptImageFileToLzuPng(
+    final result = await CryptoService.encryptImageFileToLzuImage(
       inputPath: imagePath,
       outputBaseName: p.basename(imagePath),
-      key: key,
     );
 
     final leftHist = await CryptoService.computeHistogram(originalBytes);
@@ -185,7 +181,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
       _rightHist = rightHist;
       _sourceName = sourceName;
       _resultPath = result.path;
-      _statusMessage = '输出路径: ${result.path}';
+      _statusMessage = '已使用全局默认密码加密\n输出路径: ${result.path}';
     });
   }
 
@@ -194,8 +190,8 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     if (result == null || result.files.single.path == null) return;
 
     final path = result.files.single.path!;
-    if (!path.toLowerCase().endsWith('.lzu.png')) {
-      _showError('仅支持 .lzu.png 文件');
+    if (!_isSupportedDecryptFile(path)) {
+      _showError('仅支持 .lzu_image 文件');
       return;
     }
 
@@ -208,13 +204,17 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
   Future<void> _decryptFromLzuPng(String path) async {
     setState(() => _isProcessing = true);
     try {
-      final key = await _askPassword('图片解密密码');
-      if (key == null || key.isEmpty) return;
+      final password = await _askDecryptPassword();
+      if (password == null || password.isEmpty) {
+        return;
+      }
 
-      final encryptedPreview = await File(path).readAsBytes();
-      final result = await CryptoService.decryptLzuPngToImage(
+      final encryptedPreview = await CryptoService.buildEncryptedImagePreview(
+        path,
+      );
+      final result = await CryptoService.decryptLzuImageToImage(
         inputPath: path,
-        key: key,
+        key: password,
       );
 
       if (!mounted) return;
@@ -226,9 +226,11 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
         _sourceName = p.basename(path);
         _resultPath = result.path;
         _statusMessage =
-            '已解密: ${result.originalFileName}\n输出路径: ${result.path}';
+            '已使用全局默认密码解密: ${result.originalFileName}\n输出路径: ${result.path}';
         _decryptInputPath = path;
       });
+    } on ImageDecryptException catch (e) {
+      _showError(e.message);
     } catch (e) {
       _showError('解密失败: $e');
     } finally {
@@ -243,7 +245,9 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     try {
       await Share.shareXFiles(
         [XFile(_resultPath!)],
-        text: _isEncryptMode ? 'ChaosCrypt 加密图像 (.lzu.png)' : 'ChaosCrypt 解密图像',
+        text: _isEncryptMode
+            ? 'ChaosCrypt 加密图像 (.lzu_image)'
+            : 'ChaosCrypt 解密图像',
       );
     } catch (e) {
       _showError('分享失败: $e');
@@ -261,6 +265,11 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     if (await file.exists()) {
       await file.delete();
     }
+  }
+
+  bool _isSupportedDecryptFile(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.lzu_image');
   }
 
   @override
@@ -304,8 +313,8 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                           Text('图像加密', style: theme.textTheme.headlineMedium),
                           Text(
                             _isEncryptMode
-                                ? 'Image Encryption (.lzu.png)'
-                                : 'Image Decryption (.lzu.png)',
+                                ? 'Image Encryption (.lzu_image)'
+                                : 'Image Decryption (.lzu_image)',
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: isDark
                                   ? primaryColor.withValues(alpha: 0.7)
@@ -413,11 +422,6 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                               ),
                             ],
                           ),
-                          const SizedBox(height: 12),
-                          Text(
-                            '输出命名: 原文件名 + .lzu.png（例如 photo.jpg.lzu.png）',
-                            style: theme.textTheme.bodySmall,
-                          ),
                         ],
                       ),
                     ),
@@ -447,7 +451,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                               ),
                               const SizedBox(width: 8),
                               Text(
-                                '选择 .lzu.png 文件',
+                                '选择 .lzu_image 文件',
                                 style: theme.textTheme.titleMedium,
                               ),
                             ],
@@ -460,7 +464,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                                   ? null
                                   : _pickDecryptFile,
                               icon: const Icon(Icons.upload_file),
-                              label: const Text('从文件系统选择密文图'),
+                              label: const Text('从文件系统选择 .lzu_image'),
                             ),
                           ),
                           if (_decryptInputPath != null) ...[
@@ -641,7 +645,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        _isEncryptMode ? '选择一张图片开始加密' : '选择 .lzu.png 开始解密',
+                        _isEncryptMode ? '选择一张图片开始加密' : '选择 .lzu_image 开始解密',
                         style: theme.textTheme.bodyMedium?.copyWith(
                           color: isDark ? Colors.white38 : Colors.black38,
                         ),
