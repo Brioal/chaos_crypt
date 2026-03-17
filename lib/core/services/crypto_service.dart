@@ -147,6 +147,7 @@ class ImageDecryptException implements Exception {
 
 class CryptoService {
   static const String _defaultKey = "ChaosCryptDefaultKey123";
+  static const int _imageCryptoThreads = 4;
   static const int _previewSide = 512;
   static const int _previewChannels = 3;
   static const int _previewPixelCount = _previewSide * _previewSide;
@@ -336,7 +337,9 @@ class CryptoService {
       '${outDir.path}/$outputBaseName.lzu_image',
     );
 
-    final nativeResult = await compute(_encryptFileWithKeyIsolate, {
+    final nativeResult = await compute(_benchmarkIsolate, {
+      'useOMP': true,
+      'threads': _imageCryptoThreads,
       'key': keyToUse,
       'input': inputPath,
       'output': outputPath,
@@ -382,10 +385,13 @@ class CryptoService {
         : '$inputName.decrypted';
     final outputPath = await _ensureUniquePath('${outDir.path}/$baseName');
 
-    final nativeResult = await compute(_decryptFileWithKeyIsolate, {
+    final nativeResult = await compute(_benchmarkIsolate, {
+      'useOMP': true,
+      'threads': _imageCryptoThreads,
       'key': keyToUse,
       'input': inputPath,
       'output': outputPath,
+      'mode': 'decrypt',
     });
     if (!nativeResult.startsWith('SUCCESS')) {
       throw ImageDecryptException(
@@ -460,15 +466,6 @@ class CryptoService {
 
   // Isolated entry point for file encryption
   static String _encryptFileIsolate(Map<String, dynamic> args) {
-    return _callFileFunc(
-      _encryptFile,
-      args['key'],
-      args['input'],
-      args['output'],
-    );
-  }
-
-  static String _encryptFileWithKeyIsolate(Map<String, dynamic> args) {
     return _callFileFunc(
       _encryptFile,
       args['key'],
@@ -660,15 +657,6 @@ class CryptoService {
   }
 
   static String _decryptFileIsolate(Map<String, dynamic> args) {
-    return _callFileFunc(
-      _decryptFile,
-      args['key'],
-      args['input'],
-      args['output'],
-    );
-  }
-
-  static String _decryptFileWithKeyIsolate(Map<String, dynamic> args) {
     return _callFileFunc(
       _decryptFile,
       args['key'],

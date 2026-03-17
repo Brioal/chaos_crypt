@@ -102,7 +102,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
   }
 
   Future<void> _loadSampleImage(String name) async {
-    setState(() => _isProcessing = true);
+    _prepareForNewOperation();
     try {
       final data = await rootBundle.load('assets/images/$name.png');
       final bytes = data.buffer.asUint8List();
@@ -128,7 +128,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     );
     if (picked == null) return;
 
-    setState(() => _isProcessing = true);
+    _prepareForNewOperation();
     try {
       await _encryptFromPath(picked.path, sourceName: '拍摄照片');
     } catch (e) {
@@ -147,7 +147,7 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     );
     if (picked == null) return;
 
-    setState(() => _isProcessing = true);
+    _prepareForNewOperation();
     try {
       await _encryptFromPath(picked.path, sourceName: '相册图片');
     } catch (e) {
@@ -195,14 +195,12 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
       return;
     }
 
-    setState(() {
-      _decryptInputPath = path;
-    });
+    _prepareForNewOperation(decryptInputPath: path);
     await _decryptFromLzuPng(path);
   }
 
   Future<void> _decryptFromLzuPng(String path) async {
-    setState(() => _isProcessing = true);
+    _prepareForNewOperation(decryptInputPath: path);
     try {
       final password = await _askDecryptPassword();
       if (password == null || password.isEmpty) {
@@ -265,6 +263,41 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
     if (await file.exists()) {
       await file.delete();
     }
+  }
+
+  void _prepareForNewOperation({String? decryptInputPath}) {
+    setState(() {
+      _isProcessing = true;
+      _leftBytes = null;
+      _rightBytes = null;
+      _leftHist = null;
+      _rightHist = null;
+      _sourceName = null;
+      _resultPath = null;
+      _statusMessage = null;
+      _decryptInputPath = decryptInputPath;
+    });
+  }
+
+  void _showImagePreview(Uint8List bytes, String title) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog.fullscreen(
+        child: Scaffold(
+          appBar: AppBar(title: Text(title)),
+          body: Container(
+            color: Colors.black,
+            child: Center(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 5,
+                child: Image.memory(bytes, fit: BoxFit.contain),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   bool _isSupportedDecryptFile(String path) {
@@ -535,6 +568,9 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                     originalBytes: _leftBytes!,
                     encryptedBytes: _rightBytes!,
                     sourceName: _sourceName ?? '',
+                    onOriginalTap: () => _showImagePreview(_leftBytes!, '明文图'),
+                    onEncryptedTap: () =>
+                        _showImagePreview(_rightBytes!, '密文图'),
                   ),
                 ),
               ),
@@ -574,6 +610,8 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                                 child: _ImagePanel(
                                   bytes: _leftBytes!,
                                   label: '密文图',
+                                  onTap: () =>
+                                      _showImagePreview(_leftBytes!, '密文图'),
                                 ),
                               ),
                               const SizedBox(width: 8),
@@ -581,6 +619,8 @@ class _VisualEncryptScreenState extends State<VisualEncryptScreen>
                                 child: _ImagePanel(
                                   bytes: _rightBytes!,
                                   label: '明文图',
+                                  onTap: () =>
+                                      _showImagePreview(_rightBytes!, '明文图'),
                                 ),
                               ),
                             ],
@@ -779,8 +819,9 @@ class _SourceChip extends StatelessWidget {
 class _ImagePanel extends StatelessWidget {
   final Uint8List bytes;
   final String label;
+  final VoidCallback? onTap;
 
-  const _ImagePanel({required this.bytes, required this.label});
+  const _ImagePanel({required this.bytes, required this.label, this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -788,14 +829,17 @@ class _ImagePanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: Image.memory(
-            bytes,
-            fit: BoxFit.cover,
-            height: 150,
-            width: double.infinity,
-            gaplessPlayback: true,
+        GestureDetector(
+          onTap: onTap,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.memory(
+              bytes,
+              fit: BoxFit.cover,
+              height: 150,
+              width: double.infinity,
+              gaplessPlayback: true,
+            ),
           ),
         ),
         const SizedBox(height: 6),

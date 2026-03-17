@@ -5,12 +5,16 @@ class ImageCompareWidget extends StatelessWidget {
   final Uint8List originalBytes;
   final Uint8List encryptedBytes;
   final String sourceName;
+  final VoidCallback? onOriginalTap;
+  final VoidCallback? onEncryptedTap;
 
   const ImageCompareWidget({
     super.key,
     required this.originalBytes,
     required this.encryptedBytes,
     required this.sourceName,
+    this.onOriginalTap,
+    this.onEncryptedTap,
   });
 
   @override
@@ -62,6 +66,7 @@ class ImageCompareWidget extends StatelessWidget {
                         ? primaryColor
                         : theme.colorScheme.primary,
                     isDark: isDark,
+                    onTap: onOriginalTap,
                   ),
                 ),
                 Padding(
@@ -94,6 +99,7 @@ class ImageCompareWidget extends StatelessWidget {
                         ? secondaryColor
                         : theme.colorScheme.secondary,
                     isDark: isDark,
+                    onTap: onEncryptedTap,
                   ),
                 ),
               ],
@@ -110,48 +116,53 @@ class _ImagePanel extends StatelessWidget {
   final String label;
   final Color borderColor;
   final bool isDark;
+  final VoidCallback? onTap;
 
   const _ImagePanel({
     required this.bytes,
     required this.label,
     required this.borderColor,
     required this.isDark,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: borderColor.withValues(alpha: 0.5),
-              width: 1.5,
+        GestureDetector(
+          onTap: onTap,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: borderColor.withValues(alpha: 0.5),
+                width: 1.5,
+              ),
+              boxShadow: isDark
+                  ? [
+                      BoxShadow(
+                        color: borderColor.withValues(alpha: 0.2),
+                        blurRadius: 12,
+                        spreadRadius: 1,
+                      ),
+                    ]
+                  : [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.08),
+                        blurRadius: 8,
+                      ),
+                    ],
             ),
-            boxShadow: isDark
-                ? [
-                    BoxShadow(
-                      color: borderColor.withValues(alpha: 0.2),
-                      blurRadius: 12,
-                      spreadRadius: 1,
-                    ),
-                  ]
-                : [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 8,
-                    ),
-                  ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(11),
-            child: Image.memory(
-              bytes,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: 150,
-              gaplessPlayback: true,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: Image.memory(
+                bytes,
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: 150,
+                gaplessPlayback: true,
+              ),
             ),
           ),
         ),
